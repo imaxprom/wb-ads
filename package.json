@@ -1,0 +1,32 @@
+{
+  "name": "wb-ads",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev -p 3001",
+    "build": "next build",
+    "start": "next start -p 3001",
+    "init-db": "npx tsx scripts/init-db.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@tailwindcss/postcss": "^4.2.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "better-sqlite3": "^12.9.0",
+    "next": "^16.2.3",
+    "puppeteer": "^24.40.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "recharts": "^3.8.1",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^6.0.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
+}

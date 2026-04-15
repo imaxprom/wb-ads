@@ -1,0 +1,14 @@
+node_modules/
+.next/
+data/ads.db
+data/ads.db-wal
+data/ads.db-shm
+data/wb-api-key.txt
+data/wb-tokens.json
+data/wb-sniff-log.json
+data/wb-auth-log.json
+data/chrome-profile/
+data/api-snapshots/
+*.log
+.DS_Store
+data/wb-ads.db

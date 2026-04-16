@@ -839,10 +839,12 @@ export default function DetailPanel({
   product,
   days,
   offset: dayOffset = 0,
+  refreshKey = 0,
 }: {
   product: DashboardProduct | null;
   days: number;
   offset?: number;
+  refreshKey?: number;
 }) {
   const [rows, setRows] = useState<DayRow[]>([]);
   const [tab, setTab] = useState("daily");
@@ -904,9 +906,15 @@ export default function DetailPanel({
     saveSetting("detail_col_hidden", "[]");
   }
 
+  const prevProductRef = useRef<number | null>(null);
+
   useEffect(() => {
     if (!product) return;
-    setLoading(true);
+    // Show loading only on first load or product change, not on silent refresh
+    const isNewProduct = prevProductRef.current !== product.nmId;
+    if (isNewProduct) setLoading(true);
+    prevProductRef.current = product.nmId;
+
     const url = wholeShop
       ? `/api/product-detail?nmId=all&days=90`
       : `/api/product-detail?nmId=${product.nmId}&days=90`;
@@ -914,7 +922,7 @@ export default function DetailPanel({
       .then((r) => r.json())
       .then((d) => { setRows(d.rows || []); })
       .finally(() => setLoading(false));
-  }, [product?.nmId, days, wholeShop]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [product?.nmId, days, wholeShop, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Read last_sync_time from settings and update "ago" text
   useEffect(() => {

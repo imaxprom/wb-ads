@@ -65,6 +65,7 @@ export default function ControlPanel({
   const [autoSyncing, setAutoSyncing] = useState(false);
   const [nextIn, setNextIn] = useState<number | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  const lastRunRef = useRef<number>(0);
 
   // Load settings + init server auto-sync on mount
   useEffect(() => {
@@ -98,6 +99,14 @@ export default function ControlPanel({
           setNextIn(data.secondsUntilNext);
         } else {
           setNextIn(null);
+        }
+        // Detect when server sync completes — refresh data silently
+        if (data.lastRun > 0 && data.lastRun !== lastRunRef.current && !data.running) {
+          if (lastRunRef.current > 0) {
+            // Sync just finished — refresh dashboard data
+            onSyncComplete();
+          }
+          lastRunRef.current = data.lastRun;
         }
       } catch { /* ignore */ }
     }, 2000);

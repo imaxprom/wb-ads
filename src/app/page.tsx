@@ -24,16 +24,24 @@ export default function Home() {
   const [summary, setSummary] = useState({ totalOrdersSum: 0, totalAdsSpend: 0, totalProducts: 0 });
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<DashboardProduct | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  const loadData = useCallback(async (d: number, o: number = 0) => {
-    setLoading(true);
+  const loadData = useCallback(async (d: number, o: number = 0, silent: boolean = false) => {
+    if (!silent) setLoading(true);
     try {
       const res = await fetch(`/api/dashboard?days=${d}&offset=${o}`);
       const data: DashboardResponse = await res.json();
       setProducts(data.products);
       setSummary(data.summary);
+      // Update selected product with fresh data (keep selection)
+      if (silent) {
+        setSelectedProduct((prev) => {
+          if (!prev) return null;
+          return data.products.find((p) => p.nmId === prev.nmId) || prev;
+        });
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -85,7 +93,7 @@ export default function Home() {
   return (
     <div className="min-h-screen flex flex-col bg-[var(--bg)]">
       <ControlPanel
-        onSyncComplete={() => { if (days) loadData(days); }}
+        onSyncComplete={() => { if (days) loadData(days, offset, true); setRefreshKey((k) => k + 1); }}
         onSyncManual={() => setSyncOpen(true)}
       />
       <AdsNavigation activeTab={activeTab || "cards"} onTabChange={(tab) => {
@@ -142,7 +150,7 @@ export default function Home() {
                 />
               }
               bottom={
-                <DetailPanel product={selectedProduct} days={days} offset={offset} />
+                <DetailPanel product={selectedProduct} days={days} offset={offset} refreshKey={refreshKey} />
               }
             />
           )}
@@ -154,7 +162,7 @@ export default function Home() {
       <SyncModal
         open={syncOpen}
         onClose={() => setSyncOpen(false)}
-        onComplete={() => { if (days) loadData(days); }}
+        onComplete={() => { if (days) loadData(days, offset, true); setRefreshKey((k) => k + 1); }}
       />
     </div>
   );

@@ -31,34 +31,57 @@ function getSortValue(p: DashboardProduct, col: string): number | string {
 }
 
 export default function AdsTable({
-  products, search, archive, hiddenColumns = [], onRowClick, selectedNmId,
+  products, search, archive, hiddenColumns = [], onRowClick, onRowDoubleClick, selectedNmId,
+  scrollToNmId, scrollNonce,
 }: {
   products: DashboardProduct[];
   search: string;
   archive: boolean;
   hiddenColumns?: string[];
   onRowClick?: (product: DashboardProduct) => void;
+  onRowDoubleClick?: (product: DashboardProduct) => void;
   selectedNmId?: number | null;
+  scrollToNmId?: number | null;
+  scrollNonce?: number;
 }) {
   const defaultOrder = COLUMNS.map((c) => c.key);
   const [sort, setSort] = useState<SortState>({ column: "", dir: null });
   const [columnOrder, setColumnOrder] = useState<string[]>(defaultOrder);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
+  const [columnsReady, setColumnsReady] = useState(false);
   const dragKey = useRef<string | null>(null);
   const resizeKey = useRef<string | null>(null);
   const resizeStartX = useRef(0);
   const resizeStartW = useRef(0);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const rowRefs = useRef<Map<number, HTMLTableRowElement>>(new Map());
 
   // Load from DB on mount
   useEffect(() => {
-    loadColumnWidths().then((w) => {
-      if (Object.keys(w).length > 0) setColumnWidths(w);
-    });
-    loadColumnOrder().then((o) => {
-      if (o && o.length === defaultOrder.length) setColumnOrder(o);
-    });
+    let alive = true;
+    Promise.all([loadColumnWidths(), loadColumnOrder()])
+      .then(([w, o]) => {
+        if (!alive) return;
+        if (Object.keys(w).length > 0) setColumnWidths(w);
+        if (o && o.length === defaultOrder.length) setColumnOrder(o);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setColumnsReady(true);
+      });
+    return () => { alive = false; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Скроллим к строке по запросу из родителя (Реклама → Карточки).
+  // requestAnimationFrame даёт layout-у обновиться (если только что сменили search/archive).
+  useEffect(() => {
+    if (scrollToNmId == null) return;
+    const id = requestAnimationFrame(() => {
+      const el = rowRefs.current.get(scrollToNmId);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [scrollToNmId, scrollNonce]);
 
   // Debounced save to DB
   function debouncedSaveWidths(w: Record<string, number>) {
@@ -144,6 +167,10 @@ export default function AdsTable({
 
   const visibleOrder = columnOrder.filter((k) => !hiddenColumns.includes(k));
 
+  if (!columnsReady) {
+    return <div className="overflow-x-auto flex-1" aria-hidden="true" />;
+  }
+
   return (
     <div className="overflow-x-auto flex-1">
       <table className="border-collapse text-sm" style={{ tableLayout: "fixed" }}>
@@ -168,6 +195,11 @@ export default function AdsTable({
               columnWidths={columnWidths}
               selected={p.nmId === selectedNmId}
               onClick={() => onRowClick?.(p)}
+              onDoubleClick={() => onRowDoubleClick?.(p)}
+              rowRef={(el) => {
+                if (el) rowRefs.current.set(p.nmId, el);
+                else rowRefs.current.delete(p.nmId);
+              }}
             />
           ))}
           {filtered.length === 0 && (

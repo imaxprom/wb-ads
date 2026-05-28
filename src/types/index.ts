@@ -20,6 +20,8 @@ export interface DashboardProduct {
   price: number | null;
   discount: number | null;
   deliveryPrice: number | null;
+  priceFrom: number | null;
+  priceTo: number | null;
   spp: number | null;
   salePrice: number | null;
   stockQty: number;

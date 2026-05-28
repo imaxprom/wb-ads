@@ -3,7 +3,7 @@
 const TABS = [
   { key: "search", label: "Выдача WB", enabled: false },
   { key: "cards", label: "Карточки", enabled: true },
-  { key: "ads", label: "Реклама", enabled: false },
+  { key: "ads", label: "Реклама", enabled: true },
   { key: "settings", label: "Настройки", enabled: true },
 ];
 
@@ -33,7 +33,7 @@ export default function AdsNavigation({
         }
         return (
           <button key={t.key} disabled
-            className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] cursor-not-allowed">
+            className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] opacity-40 cursor-not-allowed">
             {t.label}
           </button>
         );

@@ -27,7 +27,7 @@ export async function POST() {
   }
 
   // Budgets
-  const actives = db.prepare("SELECT advert_id FROM campaigns WHERE status = 9").all() as { advert_id: number }[];
+  const actives = db.prepare("SELECT advert_id FROM campaigns WHERE status IN (9, 11)").all() as { advert_id: number }[];
   const stmtBudget = db.prepare(`
     INSERT OR REPLACE INTO campaign_budgets (advert_id, cash, netting, total, updated_at)
     VALUES (?, ?, ?, ?, datetime('now'))

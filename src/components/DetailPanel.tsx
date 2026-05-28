@@ -1,18 +1,21 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, Fragment, type ReactNode } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, Fragment, type ReactNode } from "react";
 import { fmtNum, fmtRub, fmtDrr, localDateStr } from "@/lib/format";
 import type { DashboardProduct } from "@/types";
-import { getWbImageUrl } from "@/lib/wb-image";
+import { getWbImageCandidateUrls, withImageVersion } from "@/lib/wb-image";
 import { EyeIcon, CartIcon, BoxIcon, ClickIcon, CheckCircleIcon } from "./icons";
 import Tooltip from "./Tooltip";
 
 interface AssocDetail { sourceNmId: number; vendorCode: string; carts: number; orders: number; sumPrice: number }
+interface SppHour { hour: number; sppAvg: number; sppOrders: number }
+interface SppDistrict { district: string; sppAvg: number; sppOrders: number }
 
 interface DayRow {
   date: string; ordersCount: number; views: number; ctrGeneral: number; clicks: number;
   cartConversion: number; cartsTotal: number; orderConversion: number;
-  avgPrice: number; drr: number; adSpend: number; ordersSum: number;
+  avgPrice: number; sppAvg: number; sppOrders: number; sppByHour: SppHour[]; sppByDistrict: SppDistrict[];
+  drr: number; drrFull: number; cps: number; adSpend: number; ordersSum: number;
   adViews: number; adCtr: number; adClicks: number; adCpc: number;
   cpm: number; adClickToCart: number; adCarts: number; cartCostAd: number; adOrders: number;
   orderCostAd: number; assocCarts: number; assocOrders: number;
@@ -57,7 +60,7 @@ async function loadDetailColOrder(): Promise<string[] | null> {
 const DEFAULT_W: Record<string, number> = {
   date: 72, ordersCount: 82, views: 80, ctrGeneral: 55, clicks: 78,
   cartConversion: 58, cartsTotal: 72, orderConversion: 58, avgPrice: 82,
-  drr: 55, adSpend: 72, ordersSum: 100, adViews: 78, adCtr: 50,
+  sppAvg: 62, drr: 55, drrFull: 55, cps: 70, cpo: 70, adSpend: 72, ordersSum: 100, adViews: 78, adCtr: 50,
   adClicks: 115, adClickToCart: 58, cpm: 60, adCarts: 85, cartCostAd: 68, adOrders: 78,
   orderCostAd: 68, assocCarts: 55, assocOrders: 55, buyouts: 65,
   cancels: 52, inTransit: 50, buyoutPercent: 58,
@@ -83,6 +86,10 @@ function colLabelText(key: string): string {
     assocOrders: "+Заказы",
     buyouts: "Выкуплено",
     drr: "ДРРз",
+    drrFull: "ДРРп",
+    cps: "CPS",
+    cpo: "CPO",
+    sppAvg: "СПП",
   };
   return map[key] || key;
 }
@@ -91,15 +98,19 @@ const ic = "w-4.5 h-4.5 inline-block align-middle"; // icon class for column hea
 
 const COLS: { key: string; label: ReactNode; tooltip: string; align?: "right"|"left" }[] = [
   { key: "date", label: "Дата", tooltip: "Дата по Мск", align: "right" },
-  { key: "ordersCount", label: <><BoxIcon className={ic} /> общ.</>, tooltip: "Общее кол-во заказанных товаров, шт" },
+  { key: "ordersCount", label: "Заказы", tooltip: "Общее кол-во заказанных товаров, шт" },
   { key: "views", label: <><EyeIcon className={ic} />*общ.</>, tooltip: "Увидели карточку\n\nСколько раз покупатели видели карточку товара в выдаче каталога, поиска и рекомендаций\n(данные из закрытого API Джем)" },
-  { key: "ctrGeneral", label: "CTR*", tooltip: "Конверсия общих показов в переходы (клики), %\n(данные из закрытого API Джем)\n~ — слишком мало показов" },
+  { key: "ctrGeneral", label: "CTR", tooltip: "Конверсия общих показов в переходы (клики), %\n(данные из закрытого API Джем)\n~ — слишком мало показов" },
   { key: "clicks", label: <><ClickIcon className={ic} /> общ.</>, tooltip: "Общее кол-во переходов в карточку товара\n(и с органики, и с рекламы)" },
   { key: "cartConversion", label: <><CartIcon className={ic} /> %</>, tooltip: "Конверсия общих переходов в корзины" },
   { key: "cartsTotal", label: <><CartIcon className={ic} /> общ.</>, tooltip: "Общее кол-во товаров помещённых в корзину" },
   { key: "orderConversion", label: <><BoxIcon className={ic} /> %</>, tooltip: "Конверсия корзин в заказы\n## — сбой (или запаздывание) статистики корзин" },
   { key: "avgPrice", label: "Ср. цена", tooltip: "Средняя цена товара по заказам покупателей\nЦена поставки (без скидки WB \"СПП\")" },
+  { key: "sppAvg", label: "СПП", tooltip: "Средняя скидка постоянного покупателя по заказам WB за день\nИсточник: Statistics API /api/v1/supplier/orders\nНаведение на значение показывает средний СПП по часам и федеральным округам" },
   { key: "drr", label: <span>ДРР<span className="text-[8px]">з</span></span>, tooltip: "Доля рекламных расходов по отношению к сумме всех заказов\nдля значений меньше 1% ведущий 0 'целых' не показывается\n# % — нет заказов, хотя есть расход по рекламе\n~ — сильно меньше 0,1 %" },
+  { key: "cpo", label: "CPO", tooltip: "Cost Per Order — себестоимость заказа.\nCPO = расход на рекламу / общее кол-во заказов\n(включая органические заказы, без учёта выкупа).\n— расхода нет либо нет заказов.", align: "right" },
+  { key: "cps", label: "CPS", tooltip: "Cost Per Sale — себестоимость фактической продажи\nCPS = adSpend / (ordersCount × buyoutPct)\nС учётом возвратов/отмен по 30-дневному % выкупа.", align: "right" },
+  { key: "drrFull", label: <span>ДРР<span className="text-[8px]">п</span></span>, tooltip: "Полный ДРР с учётом % выкупа\nДРРп = adSpend / (ordersSum × buyoutPct) × 100%\nbuyoutPct — % выкупа артикула за последние 30 дней (единый на все дни)\n# % — расход есть, выкупов нет\n— — нет данных по выкупу (синк buyout-percent не отработал)", align: "right" },
   { key: "adSpend", label: "Счет", tooltip: "Сумма затрат (начислений) на рекламу\n~ — менее 1 руб." },
   { key: "ordersSum", label: "Сум. заказы", tooltip: "Сумма всех заказов товара покупателями\nПо ценам поставки (без скидки WB \"СПП\")" },
   { key: "adViews", label: <><EyeIcon className={ic} /> рекл.</>, tooltip: "Показы рекламы" },
@@ -108,9 +119,9 @@ const COLS: { key: string; label: ReactNode; tooltip: string; align?: "right"|"l
   { key: "adClickToCart", label: <><ClickIcon className={ic} />{"\u2192"}<CartIcon className={ic} /></>, tooltip: "Конверсия рекламных кликов в корзины, %" },
   { key: "cpm", label: "CPM", tooltip: "Средняя цена 1000 рекл. показов" },
   { key: "adCarts", label: <><CartIcon className={ic} /> рекл.</>, tooltip: "Добавления в корзину рекламируемого товара\n(может включать и часть кол-ва ассоциированных,\nесли идет сбой/задержка получения детальных данных)\n\n+? — есть ещё добавления в корзину\nот исходной рекламы других товаров" },
-  { key: "cartCostAd", label: <><CartIcon className={ic} /> xP</>, tooltip: "Рекламная себестоимость корзин\n(с учетом ассоциированных корзин других товаров)\n# — расход есть, но корзин нет" },
+  { key: "cartCostAd", label: <><CartIcon className={ic} /> <span className="text-[9px] align-middle">×</span><span className="text-sm align-middle">₽</span></>, tooltip: "Рекламная себестоимость корзин\n(с учетом ассоциированных корзин других товаров)\n# — расход есть, но корзин нет" },
   { key: "adOrders", label: <><BoxIcon className={ic} /> рекл.</>, tooltip: "Заказы с рекламы этого товара\n(может включать и часть кол-ва ассоциированных,\nесли идет сбой/задержка получения детальных данных)\n\n+? — есть ещё заказы\nот исходной рекламы других товаров" },
-  { key: "orderCostAd", label: <><BoxIcon className={ic} /> xP</>, tooltip: "Рекламная себестоимость заказов\n(с учетом ассоциированных заказов других товаров)\n# — расход есть, но заказов нет\n\nВажно: Показы рекламы и Заказы с неё идут не все день-в-день!\n(реклама с одного дня приносит заказы и в последующие дни)" },
+  { key: "orderCostAd", label: <><BoxIcon className={ic} /> <span className="text-[9px] align-middle">×</span><span className="text-sm align-middle">₽</span></>, tooltip: "Рекламная себестоимость заказов\n(с учетом ассоциированных заказов других товаров)\n# — расход есть, но заказов нет\n\nВажно: Показы рекламы и Заказы с неё идут не все день-в-день!\n(реклама с одного дня приносит заказы и в последующие дни)" },
   { key: "assocCarts", label: <><span>+</span><CartIcon className={ic} /></>, tooltip: "Плюс ассоциированные корзины других товаров от рекламы этого товара\n(если WB даёт такие данные в статистике рекламы\nи если этот товар единственный в своей рекл. кампании)" },
   { key: "assocOrders", label: <><span>+</span><BoxIcon className={ic} /></>, tooltip: "Плюс ассоциированные заказы других товаров от рекламы этого товара\n(если WB даёт такие данные в статистике рекламы\nи если этот товар единственный в своей рекл. кампании)" },
   { key: "buyouts", label: <><CheckCircleIcon className={ic} /> Куп</>, tooltip: "Выкуплено заказанных товаров, шт\n(из заказанных в этот день)" },
@@ -147,6 +158,8 @@ function cellValue(row: DayRow, key: string): string {
         : String(row.adClicks);
     case "avgPrice": case "adSpend": case "ordersSum":
       return (v as number) > 0 ? fmtRub(v as number) : "—";
+    case "sppAvg":
+      return row.sppOrders > 0 ? `${row.sppAvg.toFixed(1).replace(".", ",")} %` : "—";
     case "ctrGeneral": case "cartConversion": case "orderConversion": case "adCtr": case "adClickToCart":
       return (v as number) > 0 ? `${v} %` : "—";
     case "cpm": case "adCpc":
@@ -154,32 +167,191 @@ function cellValue(row: DayRow, key: string): string {
     case "cartCostAd": case "orderCostAd":
       return (v as number) > 0 ? `x ${fmtNum(v as number)} ₽` : "—";
     case "drr": return fmtDrr(row.adSpend, row.ordersSum).text;
+    case "drrFull":
+      if (row.drrFull === -1) return "# %";
+      if (row.drrFull === 0 && row.adSpend === 0) return "—";
+      if (row.drrFull === 0) return "—";
+      if (row.drrFull < 0.1) return "~ %";
+      if (row.drrFull < 1) return `.${Math.round(row.drrFull * 10)} %`;
+      return `${row.drrFull.toFixed(1)} %`;
+    case "cps": return row.cps > 0 ? fmtRub(row.cps) : "—";
+    case "cpo": {
+      if (row.adSpend <= 0 || row.ordersCount <= 0) return "—";
+      return fmtRub(Math.round(row.adSpend / row.ordersCount));
+    }
     case "buyoutPercent": return (v as number) > 0 ? `${v} %` : "~?~";
     default: return String(v ?? "—");
   }
 }
 
+function formatSppValue(value: number, orders: number): string {
+  return orders > 0 ? `${value.toFixed(1).replace(".", ",")} %` : "—";
+}
+
+function formatFederalDistrictName(value: string): string {
+  return value.replace(/\s+федеральный округ/gi, " ФО");
+}
+
+function useLeftCenteredPopup(
+  width: number,
+  desiredHeight: number,
+  opts: { margin?: number; bottomMargin?: number; verticalOffset?: number } = {},
+) {
+  const anchorRef = useRef<HTMLSpanElement | null>(null);
+  const [popupPos, setPopupPos] = useState<{ left: number; top: number; maxHeight: number } | null>(null);
+
+  function showPopup() {
+    const el = anchorRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const gap = 8;
+    const margin = opts.margin ?? 8;
+    const bottomMargin = opts.bottomMargin ?? margin;
+    const maxHeight = Math.max(120, window.innerHeight - margin - bottomMargin);
+    const height = Math.min(desiredHeight, maxHeight);
+    const anchorCenterX = rect.left + rect.width / 2;
+    const anchorCenterY = rect.top + rect.height / 2;
+
+    // Открываем сбоку слева от ячейки СПП, а не вниз под ней.
+    // Если слева мало места, прижимаем к краю экрана, сохраняя саму таблицу видимой.
+    const left = Math.min(Math.max(anchorCenterX - width - gap, margin), window.innerWidth - width - margin);
+    const top = Math.min(
+      Math.max(anchorCenterY - height / 2 + (opts.verticalOffset ?? 0), margin),
+      window.innerHeight - height - bottomMargin,
+    );
+    setPopupPos({ left, top, maxHeight });
+  }
+
+  return { anchorRef, popupPos, showPopup, hidePopup: () => setPopupPos(null) };
+}
+
+function SppCell({ row }: { row: DayRow }) {
+  const { anchorRef, popupPos, showPopup, hidePopup } = useLeftCenteredPopup(300, 860, {
+    bottomMargin: 28,
+    verticalOffset: 18,
+  });
+  const byHour = new Map(row.sppByHour.map((h) => [h.hour, h]));
+  const hours = Array.from({ length: 24 }, (_, hour) => {
+    const h = byHour.get(hour);
+    return { hour, sppAvg: h?.sppAvg || 0, sppOrders: h?.sppOrders || 0 };
+  });
+  const districts = row.sppByDistrict ?? [];
+
+  return (
+    <span
+      ref={anchorRef}
+      className="cursor-default"
+      onMouseEnter={showPopup}
+      onMouseLeave={hidePopup}
+    >
+      {formatSppValue(row.sppAvg, row.sppOrders)}
+      {row.sppOrders > 0 && popupPos && (
+        <div className="
+          fixed z-[1000]
+          px-3 py-2 rounded-lg
+          bg-[#2a2a3e] border-2 border-[var(--accent)] shadow-[0_0_20px_rgba(108,92,231,0.3)]
+          text-[10px] text-white font-normal normal-case tracking-normal
+          whitespace-nowrap text-left
+          pointer-events-none
+          overflow-y-auto
+        " style={{ left: popupPos.left, top: popupPos.top, width: 300, maxHeight: popupPos.maxHeight }}>
+          <div className="font-semibold text-[var(--text)] mb-1.5">
+            СПП по часам
+          </div>
+          <div className="text-[9px] mb-2 opacity-60">
+            Среднее по заказам за {formatDate(row.date)}
+          </div>
+          <table className="w-full table-fixed">
+            <colgroup>
+              <col className="w-[165px]" />
+              <col className="w-[58px]" />
+              <col className="w-[53px]" />
+            </colgroup>
+            <thead>
+              <tr className="text-[9px] uppercase tracking-wide opacity-50">
+                <td className="pb-1">час</td>
+                <td className="pb-1 text-right px-2">СПП</td>
+                <td className="pb-1 text-right">заказы</td>
+              </tr>
+            </thead>
+            <tbody>
+              {hours.map((h) => (
+                <tr key={h.hour} className="border-t border-white/10">
+                  <td className="py-0.5 font-mono">{String(h.hour).padStart(2, "0")}:00</td>
+                  <td className="py-0.5 text-right px-2">{formatSppValue(h.sppAvg, h.sppOrders)}</td>
+                  <td className="py-0.5 text-right text-[var(--text-muted)]">{h.sppOrders || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {districts.length > 0 && (
+            <>
+              <div className="mt-3 pt-2 border-t border-white/15">
+                <div className="font-semibold text-[var(--text)] mb-1.5">
+                  СПП по федеральным округам
+                </div>
+                <table className="w-full table-fixed">
+                  <colgroup>
+                    <col className="w-[165px]" />
+                    <col className="w-[58px]" />
+                    <col className="w-[53px]" />
+                  </colgroup>
+                  <thead>
+                    <tr className="text-[9px] uppercase tracking-wide opacity-50">
+                      <td className="pb-1">округ</td>
+                      <td className="pb-1 text-right px-2">СПП</td>
+                      <td className="pb-1 text-right">заказы</td>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {districts.map((d) => {
+                      const districtName = formatFederalDistrictName(d.district);
+                      return (
+                      <tr key={d.district} className="border-t border-white/10">
+                        <td className="py-0.5 pr-2 truncate" title={d.district}>{districtName}</td>
+                        <td className="py-0.5 text-right px-2">{formatSppValue(d.sppAvg, d.sppOrders)}</td>
+                        <td className="py-0.5 text-right text-[var(--text-muted)]">{d.sppOrders || "—"}</td>
+                      </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </span>
+  );
+}
+
 // ═══ Associated Conversions Cell with Tooltip ═══
 
 function AssocCell({ row, field }: { row: DayRow; field: "adCarts" | "adOrders" }) {
+  const popupHeight = Math.min(420, 76 + row.assocDetails.length * 22);
+  const { anchorRef, popupPos, showPopup, hidePopup } = useLeftCenteredPopup(390, popupHeight);
   const direct = field === "adCarts" ? row.adCarts : row.adOrders;
   const assoc = field === "adCarts" ? row.assocCarts : row.assocOrders;
   const text = assoc > 0 ? `${direct}+${assoc}` : String(direct);
 
   return (
-    <span className="relative group/assoc cursor-default">
+    <span
+      ref={anchorRef}
+      className="cursor-default"
+      onMouseEnter={showPopup}
+      onMouseLeave={hidePopup}
+    >
       {text}
-      {row.assocDetails.length > 0 && (
+      {row.assocDetails.length > 0 && popupPos && (
         <div className="
-          invisible opacity-0 group-hover/assoc:visible group-hover/assoc:opacity-100
-          transition-all delay-300
-          absolute z-50 right-0 top-full mt-1
+          fixed z-[1000]
           px-3 py-2 rounded-lg
           bg-[#2a2a3e] border-2 border-[var(--accent)] shadow-[0_0_20px_rgba(108,92,231,0.3)]
           text-[10px] text-white font-normal normal-case tracking-normal
-          whitespace-nowrap text-left min-w-[280px]
+          whitespace-nowrap text-left
           pointer-events-none
-        ">
+          overflow-y-auto
+        " style={{ left: popupPos.left, top: popupPos.top, width: 390, maxHeight: popupPos.maxHeight }}>
           <div className="font-semibold text-[var(--text)] mb-1.5">
             Ассоциированные конверсии в этот товар
           </div>
@@ -217,23 +389,29 @@ function AssocCell({ row, field }: { row: DayRow; field: "adCarts" | "adOrders" 
 // ═══ Associated OUT Cell (conversions FROM this product's ads to OTHER products) ═══
 
 function AssocOutCell({ row, field }: { row: DayRow; field: "assocCarts" | "assocOrders" }) {
+  const popupHeight = Math.min(420, 56 + row.assocOutDetails.length * 22);
+  const { anchorRef, popupPos, showPopup, hidePopup } = useLeftCenteredPopup(390, popupHeight);
   const value = field === "assocCarts" ? row.assocOutCarts : row.assocOutOrders;
   const text = value > 0 ? `+${value}` : "0";
 
   return (
-    <span className="relative group/aout cursor-default">
+    <span
+      ref={anchorRef}
+      className="cursor-default"
+      onMouseEnter={showPopup}
+      onMouseLeave={hidePopup}
+    >
       {text}
-      {row.assocOutDetails.length > 0 && (
+      {row.assocOutDetails.length > 0 && popupPos && (
         <div className="
-          invisible opacity-0 group-hover/aout:visible group-hover/aout:opacity-100
-          transition-all delay-300
-          absolute z-50 right-0 top-full mt-1
+          fixed z-[1000]
           px-3 py-2 rounded-lg
           bg-[#2a2a3e] border-2 border-[var(--accent)] shadow-[0_0_20px_rgba(108,92,231,0.3)]
           text-[10px] text-white font-normal normal-case tracking-normal
-          whitespace-nowrap text-left min-w-[280px]
+          whitespace-nowrap text-left
           pointer-events-none
-        ">
+          overflow-y-auto
+        " style={{ left: popupPos.left, top: popupPos.top, width: 390, maxHeight: popupPos.maxHeight }}>
           <div className="font-semibold mb-1.5">
             Ассоциированные конверсии из этого товара
           </div>
@@ -284,32 +462,83 @@ interface EntryPointsData {
   entryPoints: EntryPoint[];
 }
 
-function BuyerEntryPoints({ nmId, days, offset = 0 }: { nmId: number; days: number; offset?: number }) {
-  const [source, setSource] = useState<"wb" | "traffic" | "entry">("wb");
+function BuyerEntryPoints({ nmId, selectedDate, onSelectDate }: {
+  nmId: number;
+  selectedDate: string | null;
+  onSelectDate: (d: string) => void;
+}) {
+  const [source, setSource] = useState<"wb" | "traffic" | "entry">("traffic");
   const [data, setData] = useState<EntryPointsData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [knownEmpty, setKnownEmpty] = useState<Set<string>>(new Set());
+
+  const todayStr = localDateStr(new Date());
+  const effectiveDate = selectedDate ?? todayStr;
+
+  const dates = useMemo(() => {
+    const arr: string[] = [];
+    for (let i = 0; i < 90; i++) arr.push(localDateStr(new Date(Date.now() - i * 86400000)));
+    return arr;
+  }, []);
 
   useEffect(() => {
-    setLoading(true);
-    setError(null);
-    fetch(`/api/buyer-profile?nmId=${nmId}&days=${days}&offset=${offset}`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.ok) setData(d.data);
-        else setError(d.error || "Ошибка загрузки");
-      })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [nmId, days, offset]);
+    const offset = Math.max(
+      0,
+      Math.round((new Date(todayStr + "T12:00:00").getTime() - new Date(effectiveDate + "T12:00:00").getTime()) / 86400000)
+    );
+    const url = `/api/buyer-profile?nmId=${nmId}&days=1&offset=${offset}`;
+    const abort = new AbortController();
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    async function run(attempt = 0) {
+      setLoading(true);
+      setError(null);
+      try {
+        const r = await fetch(url, { signal: abort.signal });
+        if (r.status === 429) {
+          const wait = 10;
+          setError(`WB rate limit. Повтор через ${wait} сек…`);
+          setLoading(false);
+          if (attempt < 2) {
+            retryTimer = setTimeout(() => run(attempt + 1), wait * 1000);
+          }
+          return;
+        }
+        const d = await r.json();
+        if (d.ok) {
+          setData(d.data);
+          const total = d.data?.total;
+          const empty = !total || (total.viewCount === 0 && total.openCard === 0 && total.orders === 0);
+          if (empty) setKnownEmpty((prev) => { const s = new Set(prev); s.add(effectiveDate); return s; });
+        } else {
+          setError(d.error || "Ошибка загрузки");
+        }
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return; // silent cancel
+        setError((e as Error).message);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    // Debounce rapid clicks so 5 fast switches = 1 request
+    const debounce = setTimeout(() => { run(); }, 250);
+
+    return () => {
+      clearTimeout(debounce);
+      if (retryTimer) clearTimeout(retryTimer);
+      abort.abort();
+    };
+  }, [nmId, effectiveDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sourceToggle = (
     <div className="flex items-center gap-1 px-3 py-2 border-b border-[var(--border)] shrink-0">
       {([
-        { key: "wb", label: "WB" },
         { key: "traffic", label: "Тип трафика" },
         { key: "entry", label: "Точки входа" },
+        { key: "wb", label: "WB" },
       ] as const).map((s) => (
         <button
           key={s.key}
@@ -327,28 +556,75 @@ function BuyerEntryPoints({ nmId, days, offset = 0 }: { nmId: number; days: numb
     </div>
   );
 
-  if (source === "traffic") {
+  const datesColumn = (
+    <div className="shrink-0 overflow-y-auto border-r border-[var(--border)] bg-[var(--bg)]" style={{ width: 96 }}>
+      <table className="w-full border-collapse text-xs">
+        <thead className="sticky top-0 z-10">
+          <tr>
+            <th className="py-1.5 px-2 text-right text-[10px] font-semibold uppercase tracking-wide bg-[var(--bg-card)] border-b border-[var(--border)] text-[var(--text-muted)]">Дата</th>
+          </tr>
+        </thead>
+        <tbody>
+          {dates.map((d) => {
+            const isSel = d === effectiveDate;
+            const isToday = d === todayStr;
+            const dow = new Date(d + "T12:00:00").getDay();
+            const weekend = dow === 0 || dow === 6;
+            const empty = knownEmpty.has(d);
+            return (
+              <tr
+                key={d}
+                onClick={() => onSelectDate(d)}
+                className={
+                  "cursor-pointer border-b border-[var(--border)] transition-colors " +
+                  (isSel ? "bg-[var(--accent)]/25 " : "hover:bg-[var(--bg-card-hover)] ") +
+                  (empty && !isSel ? "opacity-40 " : "")
+                }
+                style={weekend ? { borderLeft: "2px solid rgba(251, 191, 36, 0.5)" } : undefined}
+              >
+                <td
+                  className={"py-1 px-2 text-right font-mono whitespace-nowrap " + (isToday ? "font-semibold text-[var(--text)]" : weekend ? "" : "text-[var(--text-muted)]")}
+                  style={weekend && !isToday ? { color: "rgba(251, 191, 36, 0.8)" } : undefined}
+                >
+                  {isToday ? "сегодня" : formatDate(d)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  let rightInner: ReactNode;
+  if (loading) {
+    rightInner = <div className="flex items-center justify-center h-32 text-[var(--text-muted)] text-sm">Загрузка...</div>;
+  } else if (error) {
+    rightInner = <div className="flex items-center justify-center h-32 text-[var(--danger)] text-sm">{error}</div>;
+  } else if (!data || (data.total.viewCount === 0 && data.total.openCard === 0 && data.total.orders === 0)) {
+    rightInner = <div className="flex items-center justify-center h-32 text-[var(--text-muted)] text-sm">Нет данных за эту дату</div>;
+  } else if (source === "traffic") {
+    rightInner = <BuyerTrafficType data={data} totalData={data?.total || null} loading={false} error={null} />;
+  } else if (source === "entry") {
+    rightInner = <BuyerEntryPointsDetailed data={data} totalData={data?.total || null} loading={false} error={null} />;
+  } else {
+    rightInner = null; // WB — rendered below with full table
+  }
+
+  if (rightInner !== null || source !== "wb") {
     return (
-      <div>
-        {sourceToggle}
-        <BuyerTrafficType data={data} totalData={data?.total || null} loading={loading} error={error} />
+      <div className="flex h-full overflow-hidden">
+        {datesColumn}
+        <div className="flex-1 overflow-hidden flex flex-col">
+          {sourceToggle}
+          <div className="flex-1 overflow-auto">{rightInner}</div>
+        </div>
       </div>
     );
   }
 
-  if (source === "entry") {
-    return (
-      <div>
-        {sourceToggle}
-        <BuyerEntryPointsDetailed data={data} totalData={data?.total || null} loading={loading} error={error} />
-      </div>
-    );
-  }
-
-  if (loading) return <div>{sourceToggle}<div className="flex items-center justify-center h-32 text-[var(--text-muted)] text-sm">Загрузка...</div></div>;
-  if (error) return <div>{sourceToggle}<div className="flex items-center justify-center h-32 text-[var(--danger)] text-sm">{error}</div></div>;
+  // WB source + data present below
   if (!data) return null;
-
   function toggleExpand(name: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -360,9 +636,11 @@ function BuyerEntryPoints({ nmId, days, offset = 0 }: { nmId: number; days: numb
   const pct = (a: number, b: number) => b > 0 ? Math.round((a / b) * 1000) / 10 : 0;
 
   return (
-    <div>
+    <div className="flex h-full overflow-hidden">
+      {datesColumn}
+      <div className="flex-1 overflow-hidden flex flex-col">
       {sourceToggle}
-      <div className="overflow-auto">
+      <div className="flex-1 overflow-auto">
       <table className="w-full border-collapse text-xs" style={{ tableLayout: "fixed" }}>
         <thead className="sticky top-0 z-10">
           <tr>
@@ -441,6 +719,7 @@ function BuyerEntryPoints({ nmId, days, offset = 0 }: { nmId: number; days: numb
           </tr>
         </tbody>
       </table>
+      </div>
       </div>
     </div>
   );
@@ -754,19 +1033,27 @@ function BuyerEntryPointsDetailed({ data, totalData, loading, error }: {
 // ═══ Product Card (left side) ═══
 
 function ProductCard({ product }: { product: DashboardProduct }) {
-  const [imgFailed, setImgFailed] = useState(false);
-  const imgUrl = getWbImageUrl(product.nmId, "medium");
+  const [imgIdx, setImgIdx] = useState(0);
+  const imgUrls = useMemo(
+    () => getWbImageCandidateUrls(product.nmId, "medium").map((url) => withImageVersion(url, product.updatedAt)),
+    [product.nmId, product.updatedAt],
+  );
+  const imgUrl = imgUrls[imgIdx] || null;
+
+  useEffect(() => {
+    setImgIdx(0);
+  }, [product.nmId, product.updatedAt]);
 
   return (
     <div className="h-full overflow-y-auto p-4">
       {/* Large photo */}
       <div className="mb-3 flex justify-center">
-        {imgUrl && !imgFailed ? (
+        {imgUrl ? (
           <img
             src={imgUrl}
             alt=""
             className="max-w-full max-h-48 rounded-lg object-contain"
-            onError={() => setImgFailed(true)}
+            onError={() => setImgIdx((idx) => idx + 1)}
           />
         ) : (
           <div className="w-32 h-40 rounded-lg bg-[var(--border)]" />
@@ -805,10 +1092,14 @@ function ProductCard({ product }: { product: DashboardProduct }) {
             <span className="text-yellow-400">★</span> {product.rating.toFixed(1)}
           </div>
         )}
-        {product.deliveryPrice && (
+        {(product.priceFrom || product.deliveryPrice) && (
           <div>
-            <span className="text-[var(--text-muted)]">Цена поставки: </span>
-            <span>{fmtRub(product.deliveryPrice)}</span>
+            <span className="text-[var(--text-muted)]">Цена: </span>
+            <span>
+              {product.priceFrom && product.priceTo && product.priceTo > product.priceFrom
+                ? `${fmtNum(product.priceFrom)}–${fmtNum(product.priceTo)} ₽`
+                : fmtRub(product.priceFrom || product.deliveryPrice!)}
+            </span>
           </div>
         )}
         <div>
@@ -840,13 +1131,17 @@ export default function DetailPanel({
   days,
   offset: dayOffset = 0,
   refreshKey = 0,
+  onClearProduct,
 }: {
   product: DashboardProduct | null;
   days: number;
   offset?: number;
   refreshKey?: number;
+  onClearProduct?: () => void;
 }) {
   const [rows, setRows] = useState<DayRow[]>([]);
+  const [buyoutPct30, setBuyoutPct30] = useState<number>(0);
+  const [buyoutUpdatedAt, setBuyoutUpdatedAt] = useState<string | null>(null);
   const [tab, setTab] = useState("daily");
   const [loading, setLoading] = useState(false);
   const [leftWidth, setLeftWidth] = useState(220);
@@ -854,7 +1149,7 @@ export default function DetailPanel({
   const [lastSyncTime, setLastSyncTime] = useState<number>(0);
   const [syncAgoText, setSyncAgoText] = useState("");
   const [syncTimeText, setSyncTimeText] = useState("");
-  const [wholeShop, setWholeShop] = useState(false);
+  const wholeShop = !product;
   const [hiddenCols, setHiddenCols] = useState<string[]>([]);
   const [colSettingsOpen, setColSettingsOpen] = useState(false);
   const colSettingsRef = useRef<HTMLDivElement>(null);
@@ -864,6 +1159,7 @@ export default function DetailPanel({
   const defaultOrder = COLS.map((c) => c.key);
   const [colOrder, setColOrder] = useState<string[]>(defaultOrder);
   const [colWidths, setColWidths] = useState<Record<string, number>>({});
+  const [colSettingsReady, setColSettingsReady] = useState(false);
   const dragKey = useRef<string | null>(null);
   const resizeKey = useRef<string | null>(null);
   const resizeStartX = useRef(0);
@@ -872,16 +1168,43 @@ export default function DetailPanel({
 
   // Load column settings on mount
   useEffect(() => {
-    loadDetailColWidths().then((w) => {
+    let alive = true;
+    Promise.all([
+      loadDetailColWidths(),
+      loadDetailColOrder(),
+      fetch("/api/settings").then((r) => r.json()).catch(() => ({})),
+    ]).then(([w, o, s]) => {
+      if (!alive) return;
       if (Object.keys(w).length > 0) setColWidths(w);
-    });
-    loadDetailColOrder().then((o) => {
-      if (o && o.length === defaultOrder.length) setColOrder(o);
-    });
-    // Load hidden columns
-    fetch("/api/settings").then((r) => r.json()).then((s) => {
+      if (o) {
+        const known = new Set(defaultOrder);
+        const result = o.filter((k) => known.has(k));
+        const missing = defaultOrder.filter((k) => !result.includes(k));
+        for (const m of missing) {
+          const defIdx = defaultOrder.indexOf(m);
+          let inserted = false;
+          for (let i = defIdx - 1; i >= 0; i--) {
+            const pos = result.indexOf(defaultOrder[i]);
+            if (pos !== -1) {
+              result.splice(pos + 1, 0, m);
+              inserted = true;
+              break;
+            }
+          }
+          if (!inserted) result.unshift(m);
+        }
+        const cpsIdx = result.indexOf("cps");
+        const cpoIdx = result.indexOf("cpo");
+        if (cpsIdx !== -1 && cpoIdx !== -1 && cpsIdx < cpoIdx) {
+          [result[cpsIdx], result[cpoIdx]] = [result[cpoIdx], result[cpsIdx]];
+        }
+        setColOrder(result);
+      }
       if (s.detail_col_hidden) setHiddenCols(JSON.parse(s.detail_col_hidden));
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => {
+      if (alive) setColSettingsReady(true);
+    });
+    return () => { alive = false; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Close column settings on click outside
@@ -909,18 +1232,22 @@ export default function DetailPanel({
   const prevProductRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!product) return;
-    // Show loading only on first load or product change, not on silent refresh
-    const isNewProduct = prevProductRef.current !== product.nmId;
+    // Show loading only on first load or product/mode change, not on silent refresh
+    const currentKey = product?.nmId ?? null;
+    const isNewProduct = prevProductRef.current !== currentKey;
     if (isNewProduct) setLoading(true);
-    prevProductRef.current = product.nmId;
+    prevProductRef.current = currentKey;
 
     const url = wholeShop
       ? `/api/product-detail?nmId=all&days=90`
-      : `/api/product-detail?nmId=${product.nmId}&days=90`;
+      : `/api/product-detail?nmId=${product!.nmId}&days=90`;
     fetch(url)
       .then((r) => r.json())
-      .then((d) => { setRows(d.rows || []); })
+      .then((d) => {
+        setRows(d.rows || []);
+        setBuyoutPct30(Number(d.buyoutPct30) || 0);
+        setBuyoutUpdatedAt(d.buyoutUpdatedAt || null);
+      })
       .finally(() => setLoading(false));
   }, [product?.nmId, days, wholeShop, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -998,6 +1325,20 @@ export default function DetailPanel({
 
   const colMap = new Map(COLS.map((c) => [c.key, c]));
 
+  // Динамическая надпись для tooltip ДРРп: показываем 30-дневный % выкупа и дату обновления.
+  const buyoutTooltipSuffix = (() => {
+    if (buyoutPct30 > 0) {
+      let updated = "";
+      if (buyoutUpdatedAt) {
+        const d = new Date(buyoutUpdatedAt.replace(" ", "T") + "Z");
+        const months = ["янв","февр","мар","апр","мая","июн","июл","авг","сент","окт","нояб","дек"];
+        updated = ` · обновлено ${d.getDate()} ${months[d.getMonth()]}`;
+      }
+      return `\n\nВыкуп 30д: ${buyoutPct30.toString().replace(".", ",")}%${updated}`;
+    }
+    return "\n\nВыкуп 30д: — (синк buyout-percent ещё не отработал по этому товару)";
+  })();
+
   const handleDividerMouseDown = useCallback(() => {
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
@@ -1018,50 +1359,57 @@ export default function DetailPanel({
     document.addEventListener("mouseup", onMouseUp);
   }, []);
 
-  if (!product) {
-    return (
-      <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm">
-        Выберите товар в таблице для просмотра детализации
-      </div>
-    );
-  }
-
   const tabs = [
-    { key: "daily", label: "Воронка продаж" },
-    { key: "buyer", label: "Портрет покупателя" },
-    { key: "stocks", label: "Остатки" },
-    { key: "catalogs", label: "Каталоги" },
-    { key: "queries", label: "Запросы" },
+    { key: "daily", label: "Воронка продаж", enabled: true },
+    { key: "buyer", label: "Портрет покупателя", enabled: true },
+    { key: "stocks", label: "Остатки", enabled: false },
+    { key: "catalogs", label: "Каталоги", enabled: false },
+    { key: "queries", label: "Запросы", enabled: false },
   ];
 
   return (
     <div ref={containerRef} className="flex h-full overflow-hidden">
-      {/* Left — Product Card */}
-      <div style={{ width: leftWidth }} className="shrink-0 overflow-hidden border-r border-[var(--border)]">
-        <ProductCard product={product} />
-      </div>
-
-      {/* Vertical divider */}
-      <VerticalDivider onMouseDown={handleDividerMouseDown} />
+      {/* Left — Product Card (only when a specific product is selected) */}
+      {product && (
+        <>
+          <div style={{ width: leftWidth }} className="shrink-0 overflow-hidden border-r border-[var(--border)]">
+            <ProductCard product={product} />
+          </div>
+          <VerticalDivider onMouseDown={handleDividerMouseDown} />
+        </>
+      )}
 
       {/* Right — Tabs + Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Tabs header */}
         <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--border)] shrink-0">
-          {tabs.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={
-                "px-3 py-1 text-xs rounded-lg border transition-colors " +
-                (tab === t.key
-                  ? "bg-[var(--accent)]/20 text-[var(--accent)] border-[var(--accent)]"
-                  : "text-[var(--text-muted)] border-[var(--border)] hover:text-[var(--text)]")
-              }
-            >
-              {t.label}
-            </button>
-          ))}
+          {tabs.map((t) => {
+            if (!t.enabled) {
+              return (
+                <button
+                  key={t.key}
+                  disabled
+                  className="px-3 py-1 text-xs rounded-lg border border-[var(--border)] text-[var(--text-muted)] opacity-40 cursor-not-allowed"
+                >
+                  {t.label}
+                </button>
+              );
+            }
+            return (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className={
+                  "px-3 py-1 text-xs rounded-lg border transition-colors " +
+                  (tab === t.key
+                    ? "bg-[var(--accent)]/20 text-[var(--accent)] border-[var(--accent)]"
+                    : "text-[var(--text-muted)] border-[var(--border)] hover:text-[var(--text)]")
+                }
+              >
+                {t.label}
+              </button>
+            );
+          })}
 
           {/* Last sync time */}
           {lastSyncTime > 0 && (
@@ -1087,7 +1435,9 @@ export default function DetailPanel({
             <input
               type="checkbox"
               checked={wholeShop}
-              onChange={(e) => setWholeShop(e.target.checked)}
+              onChange={(e) => {
+                if (e.target.checked && product) onClearProduct?.();
+              }}
               className="accent-[var(--accent)] w-3 h-3"
             />
             весь магазин
@@ -1149,7 +1499,7 @@ export default function DetailPanel({
         {/* Tab content */}
         <div className="flex-1 overflow-auto">
           {tab === "daily" && (
-            loading ? (
+            loading || !colSettingsReady ? (
               <div className="flex items-center justify-center h-32 text-[var(--text-muted)] text-sm">Загрузка...</div>
             ) : (
               <table className="w-full border-collapse text-xs" style={{ tableLayout: "fixed" }}>
@@ -1193,7 +1543,7 @@ export default function DetailPanel({
                             text-[10px] text-[var(--text-muted)] font-normal normal-case tracking-normal
                             whitespace-pre-wrap text-left min-w-[140px] max-w-[260px]
                             pointer-events-none
-                          ">{col.tooltip}</div>
+                          ">{key === "drrFull" ? col.tooltip + buyoutTooltipSuffix : col.tooltip}</div>
                           {/* Resize handle */}
                           <div
                             className="absolute top-0 -right-px w-[2px] h-full cursor-col-resize z-10 hover:bg-[var(--accent)]/40 transition-colors"
@@ -1236,23 +1586,26 @@ export default function DetailPanel({
                               key={key}
                               className={
                                 "py-1 px-2 whitespace-nowrap font-mono " +
-                                (["adCarts", "adOrders", "assocCarts", "assocOrders"].includes(key) ? "" : "overflow-hidden ") +
+                                (["adCarts", "adOrders", "assocCarts", "assocOrders", "sppAvg"].includes(key) ? "" : "overflow-hidden ") +
                                 (col.align === "left" ? "text-left" : "text-right") +
                                 (isToday && key === "date" ? " font-semibold text-[var(--accent)]" : "")
                               }
                               style={{
                                 width: w, minWidth: 30, maxWidth: 300,
                                 ...(key === "drr" ? { color: fmtDrr(row.adSpend, row.ordersSum).color } : {}),
+                                ...(key === "drrFull" ? { color: fmtDrr(row.adSpend, row.ordersSum > 0 && buyoutPct30 > 0 ? Math.round(row.ordersSum * buyoutPct30 / 100) : 0).color } : {}),
                                 ...((isSaturday || isSunday) && key === "date" && !isToday ? { color: "rgba(251, 191, 36, 0.8)" } : {}),
                               }}
                             >
                               {isToday && key === "date"
                                 ? "Сегодня"
-                                : (key === "adCarts" || key === "adOrders") && row.assocDetails.length > 0
-                                  ? <AssocCell row={row} field={key as "adCarts" | "adOrders"} />
-                                  : (key === "assocCarts" || key === "assocOrders") && row.assocOutDetails.length > 0
-                                    ? <AssocOutCell row={row} field={key as "assocCarts" | "assocOrders"} />
-                                    : cellValue(row, key)}
+                                : key === "sppAvg"
+                                  ? <SppCell row={row} />
+                                  : (key === "adCarts" || key === "adOrders") && row.assocDetails.length > 0
+                                    ? <AssocCell row={row} field={key as "adCarts" | "adOrders"} />
+                                    : (key === "assocCarts" || key === "assocOrders") && row.assocOutDetails.length > 0
+                                      ? <AssocOutCell row={row} field={key as "assocCarts" | "assocOrders"} />
+                                      : cellValue(row, key)}
                             </td>
                           );
                         })}
@@ -1267,7 +1620,7 @@ export default function DetailPanel({
           {tab === "stocks" && <div className="flex items-center justify-center h-32 text-[var(--text-muted)] text-sm">Остатки — в разработке</div>}
           {tab === "catalogs" && <div className="flex items-center justify-center h-32 text-[var(--text-muted)] text-sm">Каталоги — в разработке</div>}
           {tab === "queries" && <div className="flex items-center justify-center h-32 text-[var(--text-muted)] text-sm">Запросы — в разработке</div>}
-          {tab === "buyer" && <BuyerEntryPoints nmId={product.nmId} days={days} offset={dayOffset} />}
+          {tab === "buyer" && <BuyerEntryPoints nmId={product?.nmId ?? 0} selectedDate={selectedDate} onSelectDate={setSelectedDate} />}
         </div>
       </div>
     </div>

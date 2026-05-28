@@ -49,31 +49,45 @@ export default function AdsFilters(props: Props) {
         <RefreshIcon spinning={props.syncing} />
       </button>
 
-      {/* Search */}
-      <input
-        type="text"
-        value={props.search}
-        onChange={(e) => props.onSearchChange(e.target.value)}
-        placeholder="Артикул"
-        className="px-3 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] text-[var(--text)] w-36 outline-none focus:border-[var(--accent)]"
-      />
+      {/* Search — input + внешняя кнопка × (одинаковый паттерн с вкладкой «Реклама») */}
+      <div className="flex items-center gap-1.5">
+        <input
+          type="text"
+          value={props.search}
+          onChange={(e) => props.onSearchChange(e.target.value)}
+          placeholder="Артикул"
+          className="px-3 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] text-[var(--text)] w-40 outline-none focus:border-[var(--accent)]"
+        />
+        {props.search && (
+          <button
+            type="button"
+            onClick={() => props.onSearchChange("")}
+            title="Очистить фильтр"
+            aria-label="Очистить фильтр"
+            className="w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--bg-card)] text-white hover:bg-red-500/20 hover:border-red-500/60 hover:text-red-400 transition-colors text-lg leading-none"
+          >
+            ×
+          </button>
+        )}
+      </div>
       <span className="text-[var(--text-muted)] text-xs">
         {props.shown} ({props.total})
       </span>
 
       {/* Group (stub) */}
-      <select className="px-2 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] text-[var(--text)] text-xs">
+      <select disabled className="px-2 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] text-[var(--text)] text-xs opacity-40 cursor-not-allowed">
         <option>по склейке</option>
         <option>по баркоду</option>
       </select>
 
-      {/* Archive */}
-      <label className="flex items-center gap-1.5 cursor-pointer text-xs text-[var(--text-muted)]">
+      {/* Archive (stub) */}
+      <label className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] opacity-40 cursor-not-allowed">
         <input
           type="checkbox"
+          disabled
           checked={props.archive}
           onChange={(e) => props.onArchiveChange(e.target.checked)}
-          className="accent-[var(--accent)]"
+          className="accent-[var(--accent)] cursor-not-allowed"
         />
         Архив
       </label>

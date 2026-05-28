@@ -4,10 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "next dev -p 3001",
+    "dev": "next dev -H 127.0.0.1 -p 3001",
     "build": "next build",
-    "start": "next start -p 3001",
-    "init-db": "npx tsx scripts/init-db.ts"
+    "start": "next start -H 127.0.0.1 -p 3001",
+    "init-db": "npx tsx scripts/init-db.ts",
+    "audit:service": "npx tsx scripts/audit-service.ts",
+    "save-session-state": "npx tsx scripts/save-session-state.ts"
   },
   "keywords": [],
   "author": "",
@@ -15,10 +17,13 @@
   "dependencies": {
     "@tailwindcss/postcss": "^4.2.2",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "better-sqlite3": "^12.9.0",
+    "jszip": "^3.10.1",
     "next": "^16.2.3",
+    "pg": "^8.21.0",
     "puppeteer": "^24.40.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
@@ -28,5 +33,8 @@
   },
   "devDependencies": {
     "tsx": "^4.21.0"
+  },
+  "overrides": {
+    "basic-ftp": "^6.0.1"
   }
 }

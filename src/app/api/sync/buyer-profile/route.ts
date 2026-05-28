@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { localDateStr } from "@/lib/format";
 import { ensureBrowser } from "@/lib/ensure-browser";
+import { loadSavedSellerSession } from "@/lib/wb-seller-session";
 
 function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -27,22 +28,24 @@ export async function POST(request: NextRequest) {
   const days = Math.min(90, Math.max(1, Number(request.nextUrl.searchParams.get("days") || "1")));
   const errors: string[] = [];
   const startTime = Date.now();
+  const savedSession = loadSavedSellerSession();
 
-  let page = g.__wbSniffPage;
-  if (!page || !g.__wbSniffRunning) {
+  let page: import("puppeteer").Page | null = null;
+  let accessToken = "";
+  if (!savedSession) {
     const auto = await ensureBrowser();
     if (!auto.page) {
       return NextResponse.json({ ok: false, error: auto.error || "Браузер не запущен" }, { status: 400 });
     }
     page = auto.page;
-  }
 
-  const accessToken = await page.evaluate(() => {
-    return localStorage.getItem("wb-eu-passport-v2.access-token");
-  });
+    accessToken = await page.evaluate(() => {
+      return localStorage.getItem("wb-eu-passport-v2.access-token") || "";
+    });
 
-  if (!accessToken) {
-    return NextResponse.json({ ok: false, error: "Не найден access-token" }, { status: 400 });
+    if (!accessToken) {
+      return NextResponse.json({ ok: false, error: "Не найден access-token" }, { status: 400 });
+    }
   }
 
   const nmIds = (db.prepare("SELECT nm_id FROM products").all() as { nm_id: number }[]).map((r) => r.nm_id);
@@ -70,19 +73,24 @@ export async function POST(request: NextRequest) {
       g.__buyerProgress = { current: chunkStart + chunk.length + dayIdx * nmIds.length, total: nmIds.length * days, running: true };
 
       try {
-        const results = await page.evaluate(
-          async (url: string, nmIDs: number[], start: string, end: string, token: string) => {
-            const promises = nmIDs.map(async (nmID) => {
+        const results = savedSession
+          ? await Promise.all(chunk.map(async (nmID) => {
               try {
-                const res = await fetch(url, {
+                const res = await fetch(ENTRY_POINTS_URL, {
                   method: "POST",
-                  headers: { "Content-Type": "application/json", "Authorizev3": token },
+                  headers: {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Origin": "https://seller.wildberries.ru",
+                    "Referer": "https://seller.wildberries.ru/",
+                    "Authorizev3": savedSession.authorizev3,
+                    "Cookie": savedSession.cookieHeader,
+                  },
                   body: JSON.stringify({
-                    start, end,
+                    start: date, end: date,
                     subjects: [], brands: [], nms: [nmID], tagIds: [],
                     repeatedAction: "notSelected",
                   }),
-                  credentials: "include",
                 });
                 if (!res.ok) return { nmID, error: `HTTP ${res.status}` };
                 const json = await res.json();
@@ -90,15 +98,36 @@ export async function POST(request: NextRequest) {
               } catch (e) {
                 return { nmID, error: String(e) };
               }
-            });
-            return Promise.all(promises);
-          },
-          ENTRY_POINTS_URL,
-          chunk,
-          date,
-          date,
-          accessToken,
-        ) as { nmID: number; data?: { total: unknown; entryPoints: unknown[] }; error?: string }[];
+            }))
+          : await page!.evaluate(
+              async (url: string, nmIDs: number[], start: string, end: string, token: string) => {
+                const promises = nmIDs.map(async (nmID) => {
+                  try {
+                    const res = await fetch(url, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json", "Authorizev3": token },
+                      body: JSON.stringify({
+                        start, end,
+                        subjects: [], brands: [], nms: [nmID], tagIds: [],
+                        repeatedAction: "notSelected",
+                      }),
+                      credentials: "include",
+                    });
+                    if (!res.ok) return { nmID, error: `HTTP ${res.status}` };
+                    const json = await res.json();
+                    return { nmID, data: json.data };
+                  } catch (e) {
+                    return { nmID, error: String(e) };
+                  }
+                });
+                return Promise.all(promises);
+              },
+              ENTRY_POINTS_URL,
+              chunk,
+              date,
+              date,
+              accessToken,
+            ) as { nmID: number; data?: { total: unknown; entryPoints: unknown[] }; error?: string }[];
 
         const insertBatch = db.transaction(() => {
           for (const r of results) {

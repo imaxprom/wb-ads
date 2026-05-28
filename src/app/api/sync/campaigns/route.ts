@@ -20,9 +20,12 @@ export async function POST() {
 
   const countData = await countRes.json();
   const ids: number[] = [];
+  const typeMap = new Map<number, number>();
   for (const group of countData.adverts || []) {
+    const gType = group.type as number;
     for (const a of group.advert_list || []) {
       ids.push(a.advertId);
+      typeMap.set(a.advertId, gType);
     }
   }
 
@@ -46,31 +49,62 @@ export async function POST() {
   }
 
   // Step 3: Save
+  const prevRows = db.prepare(`
+    SELECT advert_id, nms_json, subject_id, bid_kopecks
+    FROM campaigns
+  `).all() as { advert_id: number; nms_json: string | null; subject_id: number | null; bid_kopecks: number | null }[];
+  const prevByAdvertId = new Map(prevRows.map((r) => [r.advert_id, r]));
+  const warnings: string[] = [];
+
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO campaigns
       (advert_id, name, type, status, daily_budget, payment_type,
-       create_time, change_time, start_time, end_time, nms_json, subject_id, bid_kopecks, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       create_time, change_time, start_time, end_time, nms_json, subject_id, bid_kopecks,
+       bid_type, placements_json, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
 
   const insertAll = db.transaction(() => {
     for (const c of allCampaigns) {
-      const nmSettings = (c.nm_settings as { nm_id: number; subject: { id: number }; bids_kopecks?: { search: number; recommendations: number } }[]) || [];
-      const nms = nmSettings.map((s) => s.nm_id);
-      const subjectId = nmSettings[0]?.subject?.id ?? null;
-      const bidKopecks = nmSettings[0]?.bids_kopecks?.search ?? null;
-      const settings = c.settings as { name: string; payment_type: string } | undefined;
+      const advertId = Number(c.id);
+      const nmSettingsRaw = c.nm_settings;
+      const nmSettings = Array.isArray(nmSettingsRaw)
+        ? nmSettingsRaw as { nm_id: number; subject?: { id?: number }; bids_kopecks?: { search?: number; recommendations?: number } }[]
+        : [];
+      const nms = nmSettings.map((s) => Number(s.nm_id)).filter((n) => Number.isFinite(n) && n > 0);
+      let nmsJson = JSON.stringify(nms);
+      let subjectId = nmSettings[0]?.subject?.id ?? null;
+      let bidKopecks = nmSettings[0]?.bids_kopecks?.search ?? nmSettings[0]?.bids_kopecks?.recommendations ?? null;
+      const settings = c.settings as { name: string; payment_type: string; placements?: Record<string, boolean> } | undefined;
       const ts = c.timestamps as { created: string; updated: string; started: string; deleted: string } | undefined;
+      const status = Number(c.status);
+      const campType = typeMap.get(advertId) ?? null;
+      const bidType = (c.bid_type as string) ?? null;
+      const placementsJson = settings?.placements ? JSON.stringify(settings.placements) : null;
+      const prev = prevByAdvertId.get(advertId);
+
+      if (
+        nms.length === 0 &&
+        (status === 9 || status === 11) &&
+        prev?.nms_json &&
+        prev.nms_json !== "[]"
+      ) {
+        nmsJson = prev.nms_json;
+        subjectId = prev.subject_id;
+        bidKopecks = prev.bid_kopecks;
+        warnings.push(`preserved last-known-good for advert ${advertId}: empty nm_settings from WB`);
+      }
 
       stmt.run(
-        c.id, settings?.name ?? null, null, c.status, null,
+        advertId, settings?.name ?? null, campType, status, null,
         settings?.payment_type ?? null,
         ts?.created ?? null, ts?.updated ?? null, ts?.started ?? null, ts?.deleted ?? null,
-        JSON.stringify(nms), subjectId, bidKopecks
+        nmsJson, subjectId, bidKopecks,
+        bidType, placementsJson
       );
     }
   });
   insertAll();
 
-  return NextResponse.json({ ok: true, synced: allCampaigns.length, errors });
+  return NextResponse.json({ ok: true, synced: allCampaigns.length, errors, warnings });
 }

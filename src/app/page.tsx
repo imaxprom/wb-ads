@@ -11,6 +11,16 @@ import SyncModal from "@/components/SyncModal";
 import SettingsPanel from "@/components/SettingsPanel";
 import SplitPane from "@/components/SplitPane";
 import DetailPanel from "@/components/DetailPanel";
+import AdsCampaignsTable from "@/components/AdsCampaignsTable";
+
+const ACTIVE_TAB_STORAGE_KEY = "wb_ads_active_tab";
+const VALID_TABS = new Set(["cards", "ads", "settings"]);
+const CARDS_DETAIL_BOTTOM_HEIGHT = 362;
+const CLIENT_BUILD = "2026-05-28-0017";
+
+function normalizeTab(tab: unknown): string | null {
+  return typeof tab === "string" && VALID_TABS.has(tab) ? tab : null;
+}
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<string | null>(null);
@@ -23,13 +33,24 @@ export default function Home() {
   const [products, setProducts] = useState<DashboardProduct[]>([]);
   const [summary, setSummary] = useState({ totalOrdersSum: 0, totalAdsSpend: 0, totalProducts: 0 });
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
+  const [hiddenColumnsReady, setHiddenColumnsReady] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<DashboardProduct | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Фильтр «Реклама» по артикулу — триггерится dblclick в «Карточках».
+  // Nonce инкрементится при каждом dblclick чтобы повторный клик по тому же артикулу
+  // тоже переприменил фильтр.
+  const [adsArticleFilter, setAdsArticleFilter] = useState<string | null>(null);
+  const [adsArticleFilterNonce, setAdsArticleFilterNonce] = useState(0);
+  // Обратная навигация: dblclick по кампании → скролл к карточке в «Карточках».
+  // Nonce триггерит scrollIntoView даже когда nmId не сменился.
+  const [cardScrollNmId, setCardScrollNmId] = useState<number | null>(null);
+  const [cardScrollNonce, setCardScrollNonce] = useState(0);
 
   const loadData = useCallback(async (d: number, o: number = 0, silent: boolean = false) => {
     if (!silent) setLoading(true);
     try {
-      const res = await fetch(`/api/dashboard?days=${d}&offset=${o}`);
+      const res = await fetch(`/api/dashboard?days=${d}&offset=${o}&v=${CLIENT_BUILD}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`dashboard ${res.status}`);
       const data: DashboardResponse = await res.json();
       setProducts(data.products);
       setSummary(data.summary);
@@ -46,7 +67,8 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/settings")
+    const browserTab = normalizeTab(window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY));
+    fetch(`/api/settings?v=${CLIENT_BUILD}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((s) => {
         const saved = Number(s.dashboard_period);
@@ -55,11 +77,14 @@ export default function Home() {
         setDays(d);
         setOffset(o);
         loadData(d, o);
-        setActiveTab(s.active_tab || "cards");
+        setActiveTab(browserTab || normalizeTab(s.active_tab) || "cards");
       })
-      .catch(() => { setDays(7); loadData(7); setActiveTab("cards"); });
+      .catch(() => { setDays(7); loadData(7); setActiveTab(browserTab || "cards"); });
 
-    loadHiddenColumns().then(setHiddenColumns);
+    loadHiddenColumns()
+      .then(setHiddenColumns)
+      .catch(() => setHiddenColumns([]))
+      .finally(() => setHiddenColumnsReady(true));
   }, [loadData]);
 
   function handleDaysChange(d: number, o: number = 0) {
@@ -72,6 +97,29 @@ export default function Home() {
       body: JSON.stringify({ dashboard_period: String(d), dashboard_offset: String(o) }),
     });
   }
+
+  function persistActiveTab(tab: string) {
+    const normalized = normalizeTab(tab);
+    if (!normalized) return;
+    window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, normalized);
+    fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active_tab: normalized }),
+    }).catch(() => {});
+  }
+
+  function switchTab(tab: string) {
+    const normalized = normalizeTab(tab);
+    if (!normalized) return;
+    setActiveTab(normalized);
+    persistActiveTab(normalized);
+  }
+
+  useEffect(() => {
+    if (!activeTab) return;
+    persistActiveTab(activeTab);
+  }, [activeTab]);
 
   const shown = products.filter((p) => {
     if (!archive && p.stockQty === 0 && p.ordersTotal === 0) return false;
@@ -94,15 +142,10 @@ export default function Home() {
     <div className="min-h-screen flex flex-col bg-[var(--bg)]">
       <ControlPanel
         onSyncComplete={() => { if (days) loadData(days, offset, true); setRefreshKey((k) => k + 1); }}
-        onSyncManual={() => setSyncOpen(true)}
+        onSyncManual={() => { if (activeTab) persistActiveTab(activeTab); setSyncOpen(true); }}
       />
       <AdsNavigation activeTab={activeTab || "cards"} onTabChange={(tab) => {
-        setActiveTab(tab);
-        fetch("/api/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ active_tab: tab }),
-        });
+        switchTab(tab);
       }} />
 
       {activeTab === "cards" && (
@@ -118,7 +161,7 @@ export default function Home() {
                 archive={archive}
                 onArchiveChange={setArchive}
                 syncing={false}
-                onSync={() => setSyncOpen(true)}
+                onSync={() => { persistActiveTab("cards"); setSyncOpen(true); }}
                 shown={shown}
                 total={summary.totalProducts}
                 totalOrdersSum={summary.totalOrdersSum}
@@ -132,13 +175,14 @@ export default function Home() {
               />
             </div>
           </div>
-          {loading ? (
+          {loading || !hiddenColumnsReady ? (
             <div className="flex-1 flex items-center justify-center text-[var(--text-muted)]">
               Загрузка...
             </div>
           ) : (
             <SplitPane
               defaultRatio={0.45}
+              defaultBottomPx={CARDS_DETAIL_BOTTOM_HEIGHT}
               top={
                 <AdsTable
                   products={products}
@@ -146,15 +190,59 @@ export default function Home() {
                   archive={archive}
                   hiddenColumns={hiddenColumns}
                   onRowClick={setSelectedProduct}
+                  onRowDoubleClick={(p) => {
+                    setAdsArticleFilter(String(p.nmId));
+                    setAdsArticleFilterNonce((n) => n + 1);
+                    switchTab("ads");
+                  }}
                   selectedNmId={selectedProduct?.nmId ?? null}
+                  scrollToNmId={cardScrollNmId}
+                  scrollNonce={cardScrollNonce}
                 />
               }
               bottom={
-                <DetailPanel product={selectedProduct} days={days} offset={offset} refreshKey={refreshKey} />
+                <DetailPanel
+                  product={selectedProduct}
+                  days={days}
+                  offset={offset}
+                  refreshKey={refreshKey}
+                  onClearProduct={() => setSelectedProduct(null)}
+                />
               }
             />
           )}
         </>
+      )}
+
+      {activeTab === "ads" && (
+        <AdsCampaignsTable
+          days={days}
+          articleFilter={adsArticleFilter}
+          articleFilterNonce={adsArticleFilterNonce}
+          onRowDoubleClick={(nmId) => {
+            if (nmId == null) {
+              alert("У этой кампании не привязан товар");
+              return;
+            }
+            const product = products.find((p) => p.nmId === nmId);
+            if (!product) {
+              // Архивные/старые кампании ссылаются на nm_id, которых нет в products
+              // (товар удалён из ассортимента или не синхронизируется). Если переключить
+              // таб — выделение останется на старой карточке, и кажется что «перебросило
+              // не туда». Лучше остановиться и сказать пользователю.
+              alert(`Товар ${nmId} не найден в Карточках (возможно, удалён из ассортимента или не синхронизируется)`);
+              return;
+            }
+            setSelectedProduct(product);
+            // Сбрасываем фильтры, чтобы карточка точно появилась в списке.
+            setSearch("");
+            setArchive(true);
+            // Запрашиваем скролл к строке (nonce — чтобы триггерилось каждый раз).
+            setCardScrollNmId(nmId);
+            setCardScrollNonce((n) => n + 1);
+            switchTab("cards");
+          }}
+        />
       )}
 
       {activeTab === "settings" && <SettingsPanel />}

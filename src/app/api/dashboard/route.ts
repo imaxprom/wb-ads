@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import type { DashboardResponse, DashboardProduct, CampaignInfo } from "@/types";
 import { localDateStr } from "@/lib/format";
+import { ensureSupplierOrdersTable } from "@/lib/supplier-orders";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   const db = getDb();
+  ensureSupplierOrdersTable(db);
   const days = Math.min(90, Math.max(1, Number(request.nextUrl.searchParams.get("days") || "7")));
   const offset = Math.max(0, Number(request.nextUrl.searchParams.get("offset") || "0"));
 
@@ -18,13 +20,14 @@ export async function GET(request: NextRequest) {
   // 1. Products
   const products = db.prepare(`
     SELECT nm_id, vendor_code, title, subject, brand, colors, rating, feedbacks,
-           price, discount, sale_price, spp
+           price, discount, min_price, max_price, sale_price, spp, updated_at
     FROM products
   `).all() as {
     nm_id: number; vendor_code: string | null; title: string | null;
     subject: string | null; brand: string | null; colors: string | null;
     rating: number | null; feedbacks: number; price: number | null;
-    discount: number | null; sale_price: number | null; spp: number | null;
+    discount: number | null; min_price: number | null; max_price: number | null;
+    sale_price: number | null; spp: number | null; updated_at: string | null;
   }[];
 
   // 2. Ad stats — use campaign_stats_daily (more complete) mapped to nm_id via nms_json
@@ -197,6 +200,17 @@ export async function GET(request: NextRequest) {
     else promoMap.set(p.nm_id, [p.promo_name]);
   }
 
+  // 11. СПП из того же источника, что нижняя таблица карточек:
+  // supplier_orders за выбранный период/день.
+  const sppRows = db.prepare(`
+    SELECT nm_id, ROUND(AVG(spp), 1) as spp_avg
+    FROM supplier_orders
+    WHERE date_day >= ? AND date_day <= ?
+      AND spp IS NOT NULL
+    GROUP BY nm_id
+  `).all(dateFrom, dateTo) as { nm_id: number; spp_avg: number | null }[];
+  const sppMap = new Map(sppRows.map((r) => [r.nm_id, r.spp_avg]));
+
   // Build campaign map: nm_id -> CampaignInfo[]
   const campByNm = new Map<number, CampaignInfo[]>();
   for (const c of campaigns) {
@@ -259,6 +273,8 @@ export async function GET(request: NextRequest) {
       p?.price && p?.discount != null
         ? Math.round(p.price * (100 - p.discount) / 100)
         : null;
+    const priceFrom = p?.min_price && p.min_price > 0 ? p.min_price : null;
+    const priceTo = p?.max_price && p.max_price > 0 ? p.max_price : null;
 
     const drr =
       adSpend > 0 && ordersSum > 0
@@ -271,7 +287,7 @@ export async function GET(request: NextRequest) {
       nmId,
       vendorCode: p?.vendor_code || null,
       title: p?.title || null,
-      updatedAt: null,
+      updatedAt: p?.updated_at || null,
       subject: p?.subject || null,
       colors: p?.colors || null,
       labels: [],
@@ -280,7 +296,9 @@ export async function GET(request: NextRequest) {
       price: p?.price || null,
       discount: p?.discount ?? null,
       deliveryPrice,
-      spp: p?.spp || null,
+      priceFrom,
+      priceTo,
+      spp: sppMap.get(nmId) ?? null,
       salePrice: p?.sale_price || null,
       stockQty: s?.stock_qty || 0,
       stockValue: deliveryPrice && s ? Math.round(s.stock_qty * deliveryPrice) : 0,

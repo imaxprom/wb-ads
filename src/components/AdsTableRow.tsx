@@ -25,7 +25,7 @@ function getCellContent(key: string, p: DashboardProduct): ReactNode {
     case "colors": return <ColorsCell colors={p.colors} />;
     case "labels": return <LabelsCell labels={p.labels} />;
     case "feedbacks": return <RatingCell rating={p.rating} feedbacks={p.feedbacks} />;
-    case "deliveryPrice": return <PriceCell deliveryPrice={p.deliveryPrice} spp={p.spp} salePrice={p.salePrice} />;
+    case "deliveryPrice": return <PriceCell deliveryPrice={p.deliveryPrice} priceFrom={p.priceFrom} priceTo={p.priceTo} spp={p.spp} />;
     case "stockValue": return <StockCell qty={p.stockQty} />;
     case "ordersSum": return <OrdersCell viewCount={p.viewCount} carts={p.cartsTotal} orders={p.ordersTotal} ordersSum={p.ordersSum} />;
     case "drr": return <DrrCell adSpend={p.adSpend} ordersSum={p.ordersSum} />;
@@ -40,16 +40,19 @@ function getCellContent(key: string, p: DashboardProduct): ReactNode {
 
 const colMap = new Map(COLUMNS.map((c) => [c.key, c]));
 
-export default function AdsTableRow({ p, columnOrder, columnWidths, selected, onClick }: {
+export default function AdsTableRow({ p, columnOrder, columnWidths, selected, onClick, onDoubleClick, rowRef }: {
   p: DashboardProduct; columnOrder: string[]; columnWidths: Record<string, number>;
-  selected?: boolean; onClick?: () => void;
+  selected?: boolean; onClick?: () => void; onDoubleClick?: () => void;
+  rowRef?: (el: HTMLTableRowElement | null) => void;
 }) {
   const td = "py-2 px-2 border-b border-[var(--border)] border-r border-r-white/[0.06] overflow-hidden";
 
   return (
     <tr
+      ref={rowRef}
       className={"group transition-colors cursor-pointer " + (selected ? "bg-[var(--accent)]/25" : "hover:bg-[var(--bg-card-hover)]")}
       onClick={onClick}
+      onDoubleClick={onDoubleClick}
     >
       {columnOrder.map((key) => {
         const col = colMap.get(key);

@@ -1,4 +1,4 @@
-import { fmtNum, fmtRub } from "@/lib/format";
+import { fmtNum } from "@/lib/format";
 import { EyeIcon, CartIcon, BoxIcon } from "@/components/icons";
 
 export default function OrdersCell({
@@ -22,7 +22,10 @@ export default function OrdersCell({
         <BoxIcon className="w-3.5 h-3.5 shrink-0" />
         <span className="min-w-[3.5rem] text-right font-semibold font-mono">{fmtNum(orders)}</span>
       </div>
-      <div className="text-right">{fmtRub(ordersSum)}</div>
+      <div className="flex items-center justify-end gap-1">
+        <span className="w-3.5 h-3.5 shrink-0 text-[var(--text-muted)] inline-flex items-center justify-center text-[13px] leading-none font-semibold">₽</span>
+        <span className="min-w-[3.5rem] text-right font-mono">{fmtNum(ordersSum)}</span>
+      </div>
     </div>
   );
 }

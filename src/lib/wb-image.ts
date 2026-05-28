@@ -27,6 +27,15 @@ function getBasketNumber(vol: number): string {
   return String(Math.min(99, basket)).padStart(2, "0");
 }
 
+function withBasketOffset(url: string, offset: number): string | null {
+  const match = url.match(/basket-(\d{2})\.wbbasket\.ru/);
+  if (!match) return null;
+  const current = Number(match[1]);
+  const next = current + offset;
+  if (!Number.isInteger(next) || next < 1 || next > 99) return null;
+  return url.replace(/basket-\d{2}\.wbbasket\.ru/, `basket-${String(next).padStart(2, "0")}.wbbasket.ru`);
+}
+
 export function getWbImageUrl(nmId: number, size: "small" | "medium" = "small"): string {
   if (!nmId || nmId <= 0) return "";
   const vol = Math.floor(nmId / 100000);
@@ -34,4 +43,22 @@ export function getWbImageUrl(nmId: number, size: "small" | "medium" = "small"):
   const basket = getBasketNumber(vol);
   const dim = size === "small" ? "c246x328" : "c516x688";
   return `https://basket-${basket}.wbbasket.ru/vol${vol}/part${part}/${nmId}/images/${dim}/1.webp`;
+}
+
+export function getWbImageCandidateUrls(nmId: number, size: "small" | "medium" = "small"): string[] {
+  const primary = getWbImageUrl(nmId, size);
+  if (!primary) return [];
+  const offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8];
+  return Array.from(
+    new Set(
+      offsets
+        .map((offset) => (offset === 0 ? primary : withBasketOffset(primary, offset)))
+        .filter((url): url is string => Boolean(url)),
+    ),
+  );
+}
+
+export function withImageVersion(url: string, version?: string | null): string {
+  if (!url || !version) return url;
+  return `${url}?v=${encodeURIComponent(version)}`;
 }

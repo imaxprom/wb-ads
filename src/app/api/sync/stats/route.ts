@@ -52,6 +52,13 @@ export async function POST() {
       (advert_id, nm_id, date, views, clicks, ctr, cpc, sum, orders, sum_price, cr, atbs)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const stmtPatchCampaignDayViews = db.prepare(`
+    UPDATE campaign_days
+    SET views_total = CASE WHEN ? > views_total THEN ? ELSE views_total END,
+        views_catalog = MAX(0, (CASE WHEN ? > views_total THEN ? ELSE views_total END) - views_search - views_reco),
+        updated_at = datetime('now')
+    WHERE advert_id = ? AND date = ?
+  `);
 
   let dailyCount = 0, nmCount = 0;
 
@@ -60,6 +67,7 @@ export async function POST() {
       for (const day of camp.days || []) {
         const date = normalizeDate(day.date);
         stmtDaily.run(camp.advertId, date, day.views, day.clicks, day.ctr, day.cpc, day.sum, day.atbs, day.orders, day.shks, day.sum_price, day.cr, day.canceled);
+        stmtPatchCampaignDayViews.run(day.views, day.views, day.views, day.views, camp.advertId, date);
         dailyCount++;
 
         // Aggregate NMs across apps

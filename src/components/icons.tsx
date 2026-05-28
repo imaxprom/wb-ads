@@ -1,3 +1,12 @@
+export function ArrowRightIcon({ className = "w-3 h-3" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 12h14" />
+      <path d="m12 5 7 7-7 7" />
+    </svg>
+  );
+}
+
 export function EyeIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
@@ -59,6 +68,15 @@ export function PauseIcon({ className = "w-3.5 h-3.5" }: { className?: string })
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinejoin="round">
       <rect x="5" y="4" width="4" height="16" rx="1" />
       <rect x="15" y="4" width="4" height="16" rx="1" />
+    </svg>
+  );
+}
+
+export function PencilIcon({ className = "w-3 h-3", style }: { className?: string; style?: import("react").CSSProperties }) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
     </svg>
   );
 }

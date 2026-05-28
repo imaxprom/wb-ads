@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { localDateStr } from "@/lib/format";
+import { ensureSupplierOrdersTable, type SppDailyRow, type SppDistrictRow, type SppHourlyRow } from "@/lib/supplier-orders";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   const db = getDb();
+  ensureSupplierOrdersTable(db);
   const nmIdParam = request.nextUrl.searchParams.get("nmId") || "";
   const isAll = nmIdParam === "all";
   const nmId = isAll ? 0 : Number(nmIdParam);
@@ -17,8 +19,88 @@ export async function GET(request: NextRequest) {
   const maxRange = 90;
   const dateFrom = localDateStr(new Date(Date.now() - (maxRange - 1) * 86400000));
 
+  function loadSpp(nmFilter: number | null) {
+    const nmWhere = nmFilter ? "AND nm_id = ?" : "";
+    const params = nmFilter ? [dateFrom, today, nmFilter] : [dateFrom, today];
+    const daily = db.prepare(`
+      SELECT
+        date_day as date,
+        ROUND(AVG(spp), 1) as "sppAvg",
+        COUNT(*) as "sppOrders"
+      FROM supplier_orders
+      WHERE date_day >= ? AND date_day <= ?
+        AND spp IS NOT NULL
+        ${nmWhere}
+      GROUP BY date_day
+    `).all(...params) as SppDailyRow[];
+
+    const hourly = db.prepare(`
+      SELECT
+        date_day as date,
+        date_hour as hour,
+        ROUND(AVG(spp), 1) as "sppAvg",
+        COUNT(*) as "sppOrders"
+      FROM supplier_orders
+      WHERE date_day >= ? AND date_day <= ?
+        AND date_hour IS NOT NULL
+        AND spp IS NOT NULL
+        ${nmWhere}
+      GROUP BY date_day, date_hour
+      ORDER BY date_day DESC, date_hour ASC
+    `).all(...params) as SppHourlyRow[];
+
+    const districts = db.prepare(`
+      SELECT
+        date_day as date,
+        COALESCE(NULLIF(TRIM(oblast_okrug_name), ''), 'Не указан') as district,
+        ROUND(AVG(spp), 1) as "sppAvg",
+        COUNT(*) as "sppOrders"
+      FROM supplier_orders
+      WHERE date_day >= ? AND date_day <= ?
+        AND spp IS NOT NULL
+        ${nmWhere}
+      GROUP BY date_day, district
+      ORDER BY date_day DESC, "sppOrders" DESC, district ASC
+    `).all(...params) as SppDistrictRow[];
+
+    const dailyByDate = new Map(daily.map((r) => [r.date, r]));
+    const hourlyByDate = new Map<string, SppHourlyRow[]>();
+    for (const r of hourly) {
+      const rows = hourlyByDate.get(r.date) || [];
+      rows.push(r);
+      hourlyByDate.set(r.date, rows);
+    }
+    const districtsByDate = new Map<string, SppDistrictRow[]>();
+    for (const r of districts) {
+      const rows = districtsByDate.get(r.date) || [];
+      rows.push(r);
+      districtsByDate.set(r.date, rows);
+    }
+    return { dailyByDate, hourlyByDate, districtsByDate };
+  }
+
+  // 30-дневный % выкупа: одно число на весь товар (в режиме "all" — средневзвешенное по всем nm_id).
+  // Из него считаем ДРРп и CPS (общие показатели для каждого дня, дневной buyout_percent нерепрезентативен).
+  let buyoutPct30 = 0;
+  let buyoutUpdatedAt: string | null = null;
+  if (isAll) {
+    const r = db.prepare(
+      "SELECT AVG(buyout_percent_30d) p, MAX(buyout_updated_at) u FROM products WHERE buyout_percent_30d > 0",
+    ).get() as { p: number | null; u: string | null } | undefined;
+    buyoutPct30 = r?.p ?? 0;
+    buyoutUpdatedAt = r?.u ?? null;
+  } else {
+    const r = db.prepare(
+      "SELECT buyout_percent_30d p, buyout_updated_at u FROM products WHERE nm_id = ?",
+    ).get(nmId) as { p: number | null; u: string | null } | undefined;
+    buyoutPct30 = r?.p ?? 0;
+    buyoutUpdatedAt = r?.u ?? null;
+  }
+  const buyoutFrac = buyoutPct30 / 100; // 0..1
+
   // "Весь магазин" mode: aggregate all products
   if (isAll) {
+    const spp = loadSpp(null);
     // First MAX per product per date, then SUM across products
     const funnel = db.prepare(`
       SELECT date,
@@ -80,6 +162,7 @@ export async function GET(request: NextRequest) {
     allDates.add(today);
     for (const r of funnel) allDates.add(r.date);
     for (const [d] of adMap) allDates.add(d);
+    for (const [d] of spp.dailyByDate) allDates.add(d);
     const fMap = new Map(funnel.map((r) => [r.date, r]));
 
     const rows = [...allDates].sort((a, b) => b.localeCompare(a)).map((date) => {
@@ -90,6 +173,7 @@ export async function GET(request: NextRequest) {
       const adClicks = ad?.ad_clicks || 0;
       const adOrders = ad?.ad_orders || 0;
       const adCarts = ad?.ad_carts || 0;
+      const sppDay = spp.dailyByDate.get(date);
       const ordersCount = f?.orders_count || 0;
       const ordersSum = f?.orders_sum || 0;
       const openCard = f?.open_card_count || 0;
@@ -103,6 +187,12 @@ export async function GET(request: NextRequest) {
       const cpc = adClicks > 0 ? Math.round((adSpend / adClicks) * 10) / 10 : 0;
       const cpm = adViews > 0 ? Math.round((adSpend / adViews) * 100000) / 100 : 0;
       const drr = ordersSum > 0 ? Math.round((adSpend / ordersSum) * 1000) / 10 : (adSpend > 0 ? -1 : 0);
+      const drrFull = ordersSum > 0 && buyoutFrac > 0
+        ? Math.round((adSpend / (ordersSum * buyoutFrac)) * 1000) / 10
+        : (adSpend > 0 && buyoutFrac > 0 ? -1 : 0);
+      const cps = ordersCount > 0 && buyoutFrac > 0
+        ? Math.round(adSpend / (ordersCount * buyoutFrac))
+        : 0;
       const cartCostAd = adCarts > 0 ? Math.round(adSpend / adCarts) : 0;
       const orderCostAd = adOrders > 0 ? Math.round(adSpend / adOrders) : 0;
       const buyoutsCount = f?.buyouts_count || 0;
@@ -111,7 +201,11 @@ export async function GET(request: NextRequest) {
 
       return {
         date, ordersCount, views: viewCount, ctrGeneral, clicks: openCard,
-        cartConversion, cartsTotal: addToCart, orderConversion, avgPrice, drr,
+        cartConversion, cartsTotal: addToCart, orderConversion, avgPrice, drr, drrFull, cps,
+        sppAvg: sppDay?.sppAvg || 0,
+        sppOrders: sppDay?.sppOrders || 0,
+        sppByHour: spp.hourlyByDate.get(date) || [],
+        sppByDistrict: spp.districtsByDate.get(date) || [],
         adSpend: Math.round(adSpend), ordersSum: Math.round(ordersSum),
         adViews, adCtr: ctr, adClicks, adCpc: cpc,
         adClickToCart: adClicks > 0 ? Math.round(((directCartsMap.get(date) || 0) / adClicks) * 1000) / 10 : 0,
@@ -124,10 +218,16 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    return NextResponse.json({ nmId: "all", rows });
+    return NextResponse.json({
+      nmId: "all", rows,
+      buyoutPct30: Math.round(buyoutPct30 * 10) / 10,
+      buyoutUpdatedAt,
+    });
   }
 
   // 1. Hybrid funnel: merge open API + Djem, take MAX for overlapping metrics
+  const spp = loadSpp(nmId);
+
   const funnel = db.prepare(`
     SELECT
       COALESCE(o.date, d.date) as date,
@@ -285,6 +385,7 @@ export async function GET(request: NextRequest) {
   for (const [d] of directByDate) allDates.add(d);
   for (const [d] of assocByDate) allDates.add(d);
   for (const [d] of assocOutByDate) allDates.add(d);
+  for (const [d] of spp.dailyByDate) allDates.add(d);
 
   // Sort descending, limit to requested `days` from today (but show all data dates beyond that)
   const sortedDates = [...allDates].sort((a, b) => b.localeCompare(a));
@@ -296,6 +397,7 @@ export async function GET(request: NextRequest) {
     const direct = directByDate.get(date);
     const assoc = assocByDate.get(date);
     const assocOut = assocOutByDate.get(date);
+    const sppDay = spp.dailyByDate.get(date);
     const adSpend = ad?.ad_spend || 0;
     const adViews = ad?.ad_views || 0;
     const adClicks = ad?.ad_clicks || 0;
@@ -313,6 +415,12 @@ export async function GET(request: NextRequest) {
     const cpc = adClicks > 0 ? Math.round((adSpend / adClicks) * 10) / 10 : 0;
     const cpm = adViews > 0 ? Math.round((adSpend / adViews) * 100000) / 100 : 0;
     const drr = ordersSum > 0 ? Math.round((adSpend / ordersSum) * 1000) / 10 : (adSpend > 0 ? -1 : 0);
+    const drrFull = ordersSum > 0 && buyoutFrac > 0
+      ? Math.round((adSpend / (ordersSum * buyoutFrac)) * 1000) / 10
+      : (adSpend > 0 && buyoutFrac > 0 ? -1 : 0);
+    const cps = ordersCount > 0 && buyoutFrac > 0
+      ? Math.round(adSpend / (ordersCount * buyoutFrac))
+      : 0;
     // xP = adSpend / campaign_daily totals (direct + assocOUT, without assocIN)
     const campAdCarts = ad?.ad_carts || 0;
     const campAdOrders = ad?.ad_orders || 0;
@@ -338,7 +446,13 @@ export async function GET(request: NextRequest) {
       cartsTotal: addToCart,
       orderConversion,
       avgPrice,
+      sppAvg: sppDay?.sppAvg || 0,
+      sppOrders: sppDay?.sppOrders || 0,
+      sppByHour: spp.hourlyByDate.get(date) || [],
+      sppByDistrict: spp.districtsByDate.get(date) || [],
       drr,
+      drrFull,
+      cps,
       adSpend: Math.round(adSpend),
       ordersSum: Math.round(ordersSum),
       adViews,
@@ -364,5 +478,9 @@ export async function GET(request: NextRequest) {
     };
   });
 
-  return NextResponse.json({ nmId, rows });
+  return NextResponse.json({
+    nmId, rows,
+    buyoutPct30: Math.round(buyoutPct30 * 10) / 10,
+    buyoutUpdatedAt,
+  });
 }

@@ -10,11 +10,14 @@
 
 Дашборд управления рекламой Wildberries. Самостоятельный проект.
 
-- **Стек:** Next.js 16 + TypeScript + Tailwind CSS 4 + SQLite (better-sqlite3) + Puppeteer
+- **Стек:** Next.js 16 + TypeScript + Tailwind CSS 4 + PostgreSQL prod + SQLite compatibility/migration scripts + Puppeteer
 - **Порт:** 3001
-- **БД:** `data/ads.db` (50 таблиц, проверено 26 мая 2026)
+- **Prod:** `https://ads.imaxprom.site`, приложение на VM108 (`wb-ads`, `wb-ads-worker`)
+- **БД prod:** VM107 PostgreSQL `wb_ads_prod` (50 таблиц, 374 MB, проверено 29 мая 2026)
+- **Локально:** `data/ads.db` может существовать как legacy/dev snapshot, но после переезда не является главным источником истины
 - **Chrome профиль:** `data/chrome-profile/` (персистентный, сессия WB сохраняется)
 - **API-ключ WB:** `data/wb-api-key.txt`
+- **API-ключ WB Prices:** `data/wb-prices-api-key.txt` (read-only prices scope; используется `/api/sync/products` для цен)
 - **Токены авторизации WB:** `data/wb-tokens.json`
 - **Сборка:** `next.config.ts` исключает `./next.config.ts` из output file tracing для `/api/ai-diary`. Это фикс постоянного Turbopack/NFT warning, где CLI-обвязка ai-diary подтягивала конфиг в runtime trace.
 
@@ -270,7 +273,9 @@ WB hard-кэп **1000 ₽** на одну операцию `POST /adv/v1/budget/
 
 ---
 
-## БД (50 таблиц, проверено 24 мая 2026)
+## БД (50 таблиц, prod PostgreSQL проверено 29 мая 2026)
+
+Prod database: VM107 PostgreSQL `wb_ads_prod`, размер `374 MB`. На 29 мая 2026: `products=30`, `campaigns=336`, `manual_clusters=1974`, `search_phrase_meta=1659`.
 
 ### Основные
 campaigns | campaign_stats_daily | campaign_stats_by_nm | campaign_zones_daily | sales_funnel_daily | auth_wb_funnel_daily | buyer_entry_points | products | supplier_orders | stocks | product_promotions | search_cluster_stats | search_cluster_bids | balance_history | payment_history | expense_history | campaign_budgets | settings | accounts | sync_log | sync_test_log | security_audit_log | bid_history | bid_changes_log | minus_phrases | automation_rules | automation_log | positions | competitors | competitor_positions
@@ -317,11 +322,14 @@ campaigns | campaign_stats_daily | campaign_stats_by_nm | campaign_zones_daily |
 
 ---
 
-## SSH-доступ к RU-серверу (новое)
+## SSH-доступ к RU-серверу wb-parser
 - `ssh wb-parser` → user `makson`, Ubuntu 24.04, RU IP
 - `~/wb-parser/positions_rpc.py` — JSON stdin → JSON stdout
-- Вызов: `spawn("ssh", ["wb-parser", "cd ~/wb-parser && venv/bin/python positions_rpc.py"])`
-- Скорость: 1 фраза ~2.5с, 10 фраз ~10с (с SSH overhead)
+- На VM108 alias `wb-parser` настроен отдельным ключом; проверено 29 мая 2026: `positions_rpc.py` доступен, Python 3.12.3.
+- В коде вызовы централизованы в `src/lib/wb-parser-rpc.ts`; host можно переопределить через `WB_PARSER_SSH_HOST`.
+- Endpoints: `/api/sync/phrase-positions-batch`, `/api/sync/phrase-position-one`, `/api/sync/phrase-positions`, `/api/clusters/scan-campaign`.
+- `/api/clusters/scan-campaign` больше не пишет полный провал (`scanned=0`, `failed=total`) как success. Проверенный prod-run 29 мая 2026 для `25141382`: `488/488`, `failed=0`, `passesUsed=2`.
+- Скорость: batch идёт чанками через SSH/RPC; большие кампании могут идти несколько минут.
 
 ---
 
@@ -336,12 +344,12 @@ campaigns | campaign_stats_daily | campaign_stats_by_nm | campaign_zones_daily |
 
 ---
 
-## Магазин (актуально на 24 мая 2026)
+## Магазин (актуально на 29 мая 2026)
 
 - Бренд: IMSI, Магазин: IMSI Каталог
 - Supplier ID: 262998 (прежний auth) / 1166225 (API key numeric oid) / UUID `e0334427-4f82-4bc3-a0ab-43394e58b6ac`
-- **30 товаров**, **15 активных (status=9) + 13 на паузе (11) + 308 архив (7)** = 336 кампаний
-- **1697 manual-кластеров** в БД после массовой кластеризации/импорта
+- **30 товаров**, **336 кампаний** всего
+- **1974 manual-кластера** в prod БД после массовой кластеризации/импорта и успешного `scan-campaign`
 
 ---
 
@@ -352,4 +360,6 @@ campaigns | campaign_stats_daily | campaign_stats_by_nm | campaign_zones_daily |
 - `data/chrome-profile/` — сессия WB
 - `data/wb-tokens.json` — только для FIRST launch sniffer
 - `data/wb-api-key.txt` — WB open API
+- `data/wb-prices-api-key.txt` — WB Prices API read-only key для цен
+- `data/wb-ads-prod-db.env` — prod DB env на сервере/локально, не коммитить и не раскрывать
 - `~/wb-parser/positions_rpc.py` на RU-сервере — RPC для позиций/буста

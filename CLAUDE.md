@@ -2,16 +2,18 @@
 
 ## Проект
 - Рабочая директория: `/Users/octopus/Projects/wb-ads`
-- Стек: Next.js + TypeScript + Tailwind CSS + SQLite (better-sqlite3) + Puppeteer
+- Стек: Next.js + TypeScript + Tailwind CSS + PostgreSQL prod + SQLite compatibility/migration scripts + Puppeteer
 - Порт: 3001
-- БД: `data/ads.db` (50 таблиц, проверено 26 мая 2026)
+- Prod: `https://ads.imaxprom.site`, VM108 app (`wb-ads`, `wb-ads-worker`), VM107 PostgreSQL `wb_ads_prod`
+- БД prod: PostgreSQL `wb_ads_prod` (50 таблиц, 374 MB, проверено 29 мая 2026)
+- Локально: `data/ads.db` может существовать как legacy/dev snapshot; не считать источником истины без сверки с prod
 - Контекст проекта: `PROJECT_CONTEXT.md`
 - База знаний в UI: `src/components/KnowledgeBase.tsx`
 
 ## Команды
 - `npm run dev` — запуск dev-сервера на порту 3001
 - `npm run init-db` — инициализация БД (создание всех таблиц)
-- `npm run save-session-state` — обновить `SESSION_STATE.md` из БД и локальных status endpoints
+- `npm run save-session-state` — обновить черновик `SESSION_STATE.md`; после запуска обязательно вручную сверить prod VM108/VM107/PostgreSQL и поправить файл, если скрипт взял локальный snapshot
 
 ## Правила
 - ЗАПРЕЩЕНО обращаться к `/Users/octopus/Projects/website/` или другим проектам без явного разрешения пользователя
@@ -21,6 +23,7 @@
 - Все настройки в БД через API (НЕ localStorage)
 - SVG-иконки вместо эмодзи
 - Внутренние server-to-server вызовы только через `WB_ADS_INTERNAL_BASE_URL` или `http://127.0.0.1:3001`, НЕ `localhost:3001` (иначе возможен редирект `/login` и пустые `OK 0` в test-auto)
+- `data/` полностью вне Git: там env, ключи, токены, БД, Chrome-профиль. Никогда не писать секреты в docs/memory/commit/final answer
 
 ## Режим работы
 - Перед каждым ответом используй extended thinking (глубокий анализ)

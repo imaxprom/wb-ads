@@ -6,6 +6,11 @@
 
 ## В работе / ближайшие задачи
 
+### Текущий старт после сохранения 29 мая 2026
+- [ ] Разобрать post-midnight `test-auto`: последние строки #1688-#1690 дают `12/13 ok`, `errors=1`, `429=0`, тогда как #1686-#1687 были `24/24 ok`. Сначала смотреть `sync_test_log.timeline_json`, не делать вывод по агрегату.
+- [ ] Закрыть warnings `/api/audit/service`: сегодня нет Djem daily rows для nmId `1012324217` и `165140159`; `fullstat-v3-daily` за `2026-05-28` помечен stale/incomplete до следующего корректного yesterday-close.
+- [ ] Привести `scripts/save-session-state.ts` к prod-first режиму или явно держать ручную prod-сверку после генерации: сейчас скрипт может брать локальный SQLite snapshot, поэтому финальный `SESSION_STATE.md` правится вручную после проверки VM108/VM107.
+
 ### Критичное
 - [x] ~~API-токен без scope «Статистика»~~ — **сделано 20 апр 2026**: пользователь перевыпустил токен с **Реклама + Статистика**, файл `data/wb-api-key.txt` обновлён
 - [x] ~~MPSTATS-кластеры с общими фразами~~ — **НЕ актуально**: пользователь пересоздал кластеры чисто. Сейчас 4 кластера (id=7, 11, 12, 13), **0 общих фраз между любыми парами**. Все 5 фраз «Наша ставка» корректно matched: 4 parent + 1 child
@@ -60,6 +65,20 @@
 - [ ] Дозагрузить buyer_entry_points за недостающие дни (45 из 90 загружено, остальные — rate limit)
 - [ ] Дозагрузить campaign_stats_daily за старые периоды (если fullstats отдаёт > 7 дней)
 - [ ] Вкладка "Остатки" — реализовать (данные в таблице stocks уже есть)
+
+## Завершено (сессия 27-29 мая 2026 — prod migration, PostgreSQL, domain, auth, prices, wb-parser scan)
+
+- [x] Проект перенесён на prod stack: VM108 `wb-ads` для приложения и worker, VM107 PostgreSQL `wb_ads_prod` для основной БД, домен `https://ads.imaxprom.site`.
+- [x] Добавлена публичная защита через Basic Auth; сайт больше не доступен без авторизации.
+- [x] БД перенесена в PostgreSQL, критичные SQLite/PostgreSQL несовместимости исправлялись по факту проверки: прямые PostgreSQL reads для тяжёлых мест, исправления `GROUP BY`, уход от лишних прокладок там, где приложение и БД уже на сервере.
+- [x] `data/` добавлен в `.gitignore` целиком: БД, env, токены, ключи, Chrome-профиль и backup-файлы не попадают в GitHub.
+- [x] Добавлен отдельный read-only ключ WB Prices API (`data/wb-prices-api-key.txt`) и `getPricesApiKey()`. `/api/sync/products` обновляет цены через `discounts-prices-api`, fallback на старые источники только при явной ошибке Prices API.
+- [x] Контрольные цены после Prices API fix проверены в prod: `165140159` max 2280 / discount 51 / min 490 / discounted 1117; `322000486` max 1900 / discount 43 / min 570 / discounted 1243; `854839957` max 1900 / discount 45 / min 1045.
+- [x] `wb-parser` на VM108 починен: создан отдельный SSH key VM108 -> wb-parser, alias `wb-parser` работает, `positions_rpc.py` доступен.
+- [x] SSH/RPC вызовы вынесены в `src/lib/wb-parser-rpc.ts`; endpoints позиций и `scan-campaign` используют общий helper и `WB_PARSER_SSH_HOST` override.
+- [x] `/api/clusters/scan-campaign` больше не маскирует полный провал как success. Старый симптом был `scanned=0 failed=907 success`; после фикса prod-run по `25141382` прошёл `488/488`, `failed=0`, `passesUsed=2`, создал 280 кластеров, обновил 6, удалил 3, переместил 8 фраз.
+- [x] PostgreSQL fallback query в `scan-campaign` исправлен: `cpk.name` агрегируется через `MIN`, чтобы не падать на `GROUP BY`.
+- [x] GitHub обновлён коммитом `74c7614 Migrate WB Ads to production PostgreSQL stack`.
 
 ## Завершено (сессия 23-24 мая 2026 — cascade/audit, test-auto log, browser reconnect, UI ставки)
 

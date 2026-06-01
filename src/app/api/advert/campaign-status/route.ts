@@ -18,23 +18,38 @@ interface Body {
 
 function isCrossOrigin(request: NextRequest): boolean {
   const origin = request.headers.get("origin");
-  if (!origin) return false;
-  let originUrl: URL;
-  try { originUrl = new URL(origin); }
-  catch { return true; }
+  const referer = request.headers.get("referer");
+  if (!origin && !referer) return false;
+  if (request.headers.get("sec-fetch-site") === "same-origin") return false;
 
   const requestHost = request.headers.get("x-forwarded-host") || request.headers.get("host") || request.nextUrl.host;
   const requestProto = request.headers.get("x-forwarded-proto") || request.nextUrl.protocol.replace(":", "");
-  const requestOrigin = `${requestProto}://${requestHost}`;
-  if (originUrl.origin === requestOrigin || originUrl.origin === request.nextUrl.origin) return false;
+  const expectedOrigins = new Set([
+    `${requestProto}://${requestHost}`,
+    request.nextUrl.origin,
+  ]);
+
+  // VM108 can sit behind an internal HTTP proxy while the public browser origin is HTTPS.
+  // Accept the public host with both schemes; proxy.ts still enforces browser same-origin
+  // metadata before this high-risk route is reached.
+  const hostOnly = requestHost.split(",")[0]?.trim();
+  if (hostOnly) {
+    expectedOrigins.add(`https://${hostOnly}`);
+    expectedOrigins.add(`http://${hostOnly}`);
+  }
+
+  let sourceUrl: URL;
+  try { sourceUrl = new URL(origin || referer || ""); }
+  catch { return true; }
+  if (expectedOrigins.has(sourceUrl.origin)) return false;
 
   // В локальной разработке браузер может открыть 127.0.0.1, а Next внутри собрать origin
   // как localhost. Это один и тот же loopback-хост, если порт совпадает.
-  const requestUrl = new URL(requestOrigin);
+  const requestUrl = new URL(`${requestProto}://${requestHost}`);
   const loopbacks = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-  const originPort = originUrl.port || (originUrl.protocol === "https:" ? "443" : "80");
+  const originPort = sourceUrl.port || (sourceUrl.protocol === "https:" ? "443" : "80");
   const requestPort = requestUrl.port || (requestUrl.protocol === "https:" ? "443" : "80");
-  if (loopbacks.has(originUrl.hostname) && loopbacks.has(requestUrl.hostname) && originPort === requestPort) {
+  if (loopbacks.has(sourceUrl.hostname) && loopbacks.has(requestUrl.hostname) && originPort === requestPort) {
     return false;
   }
 

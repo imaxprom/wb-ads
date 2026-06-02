@@ -32,9 +32,12 @@ export async function GET() {
 
 interface ListResp {
   items?: Array<{
-    advertId: number;
-    nmId: number;
+    advertId?: number;
+    nmId?: number;
+    advert_id?: number;
+    nm_id?: number;
     normQueries?: { active?: string[]; excluded?: string[] };
+    norm_queries?: { active?: string[]; excluded?: string[] };
   }> | null;
 }
 
@@ -64,6 +67,18 @@ interface StatsResp {
   stats?: Array<{ advert_id: number; nm_id: number; stats?: StatItem[] }>;
 }
 
+type Pair = { advert_id: number; nm_id: number };
+
+function pairKey(p: Pair) {
+  return `${p.advert_id}/${p.nm_id}`;
+}
+
+function chunks<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 export async function POST(request: NextRequest) {
   const db = getDb();
   const apiKey = getApiKey();
@@ -78,7 +93,7 @@ export async function POST(request: NextRequest) {
   const toParam = sp.get("to") || today;
 
   // Сборка списка пар (advert_id, nm_id) для синка.
-  let pairs: { advert_id: number; nm_id: number }[];
+  let pairs: Pair[];
   if (advertIdParam) {
     const advertId = Number(advertIdParam);
     if (!advertId) return NextResponse.json({ ok: false, error: "advertID invalid" }, { status: 400 });
@@ -146,112 +161,160 @@ export async function POST(request: NextRequest) {
   let pairsOk = 0;
   let rowsTouched = 0;
 
-  // Rate-limit: оба endpoint'а поддерживают 5 rps. Делаем паузу 250 мс между парами.
-  const GAP_MS = 250;
+  // WB normquery endpoints accept up to 100 items per request. Batch by that hard limit:
+  // 3 requests per chunk (list/get-bids/stats), not 3 requests per advert/nm pair.
+  const CHUNK_SIZE = 100;
+  const REQUEST_GAP_MS = 500;
+  const CHUNK_GAP_MS = 6100;
+  const pairChunks = chunks(pairs, CHUNK_SIZE);
 
-  for (let i = 0; i < pairs.length; i++) {
-    const { advert_id, nm_id } = pairs[i];
-    g.__presetInfoOpenProgress!.current = i;
+  for (let chunkIndex = 0; chunkIndex < pairChunks.length; chunkIndex++) {
+    const chunk = pairChunks[chunkIndex];
+    const chunkStart = chunkIndex * CHUNK_SIZE;
+    const chunkLabel = `chunk ${chunkStart + 1}-${chunkStart + chunk.length}`;
+    g.__presetInfoOpenProgress!.current = chunkStart;
+
+    const phraseSets = new Map<string, Map<string, { is_excluded: 0 | 1 }>>();
+    const bidsByPair = new Map<string, Map<string, number | null>>();
+    const statsByPair = new Map<string, Map<string, StatItem>>();
+
     try {
       // 1) /list — каркас active + excluded (camelCase!)
       const listRes = await fetch(`${BASE}/adv/v0/normquery/list`, {
         method: "POST",
         headers: { "Authorization": apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ items: [{ advertId: advert_id, nmId: nm_id }] }),
+        body: JSON.stringify({ items: chunk.map((p) => ({ advertId: p.advert_id, nmId: p.nm_id })) }),
       });
-      if (listRes.status === 429) { errors.push(`${advert_id}/${nm_id} list 429`); await sleep(5000); continue; }
-      if (!listRes.ok) { errors.push(`${advert_id}/${nm_id} list ${listRes.status}`); await sleep(GAP_MS); continue; }
+      if (listRes.status === 429) {
+        errors.push(`${chunkLabel} list 429`);
+        g.__presetInfoOpenProgress!.err = errors.length;
+        await sleep(60000);
+        continue;
+      }
+      if (!listRes.ok) {
+        errors.push(`${chunkLabel} list ${listRes.status}`);
+        g.__presetInfoOpenProgress!.err = errors.length;
+        await sleep(REQUEST_GAP_MS);
+        continue;
+      }
       const listData = await listRes.json() as ListResp;
-      const item = (listData.items || [])[0];
-      const active = item?.normQueries?.active ?? [];
-      const excluded = item?.normQueries?.excluded ?? [];
-      const phraseSet = new Map<string, { is_excluded: 0 | 1 }>();
-      for (const ph of active) phraseSet.set(ph, { is_excluded: 0 });
-      for (const ph of excluded) phraseSet.set(ph, { is_excluded: 1 });
+      for (const item of listData.items || []) {
+        const advert_id = Number(item.advertId ?? item.advert_id);
+        const nm_id = Number(item.nmId ?? item.nm_id);
+        if (!Number.isFinite(advert_id) || !Number.isFinite(nm_id)) continue;
+        const normQueries = item.normQueries ?? item.norm_queries;
+        const phraseSet = new Map<string, { is_excluded: 0 | 1 }>();
+        for (const ph of normQueries?.active ?? []) phraseSet.set(ph, { is_excluded: 0 });
+        for (const ph of normQueries?.excluded ?? []) phraseSet.set(ph, { is_excluded: 1 });
+        phraseSets.set(pairKey({ advert_id, nm_id }), phraseSet);
+      }
 
-      await sleep(GAP_MS);
+      await sleep(REQUEST_GAP_MS);
 
       // 2) /get-bids — actual_cpm (только для manual; для unified обычно пусто)
-      const bidsByPhrase = new Map<string, number | null>();
       try {
         const bidsRes = await fetch(`${BASE}/adv/v0/normquery/get-bids`, {
           method: "POST",
           headers: { "Authorization": apiKey, "Content-Type": "application/json" },
-          body: JSON.stringify({ items: [{ advert_id, nm_id }] }),
+          body: JSON.stringify({ items: chunk.map((p) => ({ advert_id: p.advert_id, nm_id: p.nm_id })) }),
         });
         if (bidsRes.ok) {
           const bidsData = await bidsRes.json() as BidsResp;
           for (const b of bidsData.bids || []) {
+            const key = pairKey({ advert_id: b.advert_id, nm_id: b.nm_id });
+            const byPhrase = bidsByPair.get(key) ?? new Map<string, number | null>();
             // bid_kopecks приоритетнее (точнее), иначе bid (рубли) × 100
             const cpm = b.bid_kopecks ?? (b.bid != null ? b.bid * 100 : null);
-            bidsByPhrase.set(b.norm_query, cpm);
+            byPhrase.set(b.norm_query, cpm);
+            bidsByPair.set(key, byPhrase);
           }
         } else if (bidsRes.status === 429) {
-          errors.push(`${advert_id}/${nm_id} bids 429`);
+          errors.push(`${chunkLabel} bids 429`);
+          g.__presetInfoOpenProgress!.err = errors.length;
           await sleep(5000);
+        } else {
+          errors.push(`${chunkLabel} bids ${bidsRes.status}`);
+          g.__presetInfoOpenProgress!.err = errors.length;
         }
-      } catch (e) { errors.push(`${advert_id}/${nm_id} bids: ${e instanceof Error ? e.message : String(e)}`); }
+      } catch (e) {
+        errors.push(`${chunkLabel} bids: ${e instanceof Error ? e.message : String(e)}`);
+        g.__presetInfoOpenProgress!.err = errors.length;
+      }
 
-      await sleep(GAP_MS);
+      await sleep(REQUEST_GAP_MS);
 
       // 3) /stats — агрегат за период (from/to). Возвращает только фразы с views > 0.
-      // Bодаём один раз с from=to (агрегат за период) — возможно WB поддерживает range.
-      // На практике stats endpoint требует ОТДЕЛЬНОГО запроса per day; но для агрегата
-      // /v1/normquery/stats принимает range. Для совместимости берём v0 с from=to=fromParam,
-      // потом fromParam+1 и т.д. — но это много запросов. Альтернатива: дёргаем v0 с from=fromParam, to=toParam — WB обычно агрегирует.
-      const statsByPhrase = new Map<string, StatItem>();
       try {
         const statsRes = await fetch(`${BASE}/adv/v0/normquery/stats`, {
           method: "POST",
           headers: { "Authorization": apiKey, "Content-Type": "application/json" },
-          body: JSON.stringify({ from: fromParam, to: toParam, items: [{ advert_id, nm_id }] }),
+          body: JSON.stringify({
+            from: fromParam,
+            to: toParam,
+            items: chunk.map((p) => ({ advert_id: p.advert_id, nm_id: p.nm_id })),
+          }),
         });
         if (statsRes.ok) {
           const statsData = await statsRes.json() as StatsResp;
           for (const g of statsData.stats || []) {
-            for (const s of g.stats || []) {
-              statsByPhrase.set(s.norm_query, s);
-            }
+            const key = pairKey({ advert_id: g.advert_id, nm_id: g.nm_id });
+            const byPhrase = statsByPair.get(key) ?? new Map<string, StatItem>();
+            for (const s of g.stats || []) byPhrase.set(s.norm_query, s);
+            statsByPair.set(key, byPhrase);
           }
         } else if (statsRes.status === 429) {
-          errors.push(`${advert_id}/${nm_id} stats 429`);
-          await sleep(5000);
+          errors.push(`${chunkLabel} stats 429`);
+          g.__presetInfoOpenProgress!.err = errors.length;
+          await sleep(60000);
+        } else {
+          errors.push(`${chunkLabel} stats ${statsRes.status}`);
+          g.__presetInfoOpenProgress!.err = errors.length;
         }
-      } catch (e) { errors.push(`${advert_id}/${nm_id} stats: ${e instanceof Error ? e.message : String(e)}`); }
-
-      await sleep(GAP_MS);
+      } catch (e) {
+        errors.push(`${chunkLabel} stats: ${e instanceof Error ? e.message : String(e)}`);
+        g.__presetInfoOpenProgress!.err = errors.length;
+      }
 
       // 4) UPSERT в campaign_preset_keywords с MAX-семантикой
       db.transaction(() => {
-        for (const [name, meta] of phraseSet.entries()) {
-          const stat = statsByPhrase.get(name);
-          const cpm = bidsByPhrase.get(name) ?? null;
-          const views = stat?.views ?? 0;
-          const clicks = stat?.clicks ?? 0;
-          const ctr = stat?.ctr ?? 0;
-          const cpc = stat?.cpc ?? 0;
-          const cpmM = stat?.cpm ?? 0;
-          const avgPos = stat?.avg_pos ?? 0;
-          const baskets = stat?.atbs ?? 0;
-          const orders = stat?.orders ?? 0;
-          // spend computed: clicks × cpc (open API не отдаёт spend отдельно)
-          const spend = clicks * cpc;
-          upsertStmt.run(
-            advert_id, nm_id, name, meta.is_excluded,
-            views, clicks, baskets, orders, 0 /* shks */,
-            ctr, cpc, cpmM, avgPos, spend,
-            cpm, "RUB", fromParam, toParam,
-          );
-          rowsTouched++;
+        for (const pair of chunk) {
+          const key = pairKey(pair);
+          const phraseSet = phraseSets.get(key) ?? new Map<string, { is_excluded: 0 | 1 }>();
+          const bidsByPhrase = bidsByPair.get(key) ?? new Map<string, number | null>();
+          const statsByPhrase = statsByPair.get(key) ?? new Map<string, StatItem>();
+          for (const [name, meta] of phraseSet.entries()) {
+            const stat = statsByPhrase.get(name);
+            const cpm = bidsByPhrase.get(name) ?? null;
+            const views = stat?.views ?? 0;
+            const clicks = stat?.clicks ?? 0;
+            const ctr = stat?.ctr ?? 0;
+            const cpc = stat?.cpc ?? 0;
+            const cpmM = stat?.cpm ?? 0;
+            const avgPos = stat?.avg_pos ?? 0;
+            const baskets = stat?.atbs ?? 0;
+            const orders = stat?.orders ?? 0;
+            // spend computed: clicks × cpc (open API не отдаёт spend отдельно)
+            const spend = clicks * cpc;
+            upsertStmt.run(
+              pair.advert_id, pair.nm_id, name, meta.is_excluded,
+              views, clicks, baskets, orders, 0 /* shks */,
+              ctr, cpc, cpmM, avgPos, spend,
+              cpm, "RUB", fromParam, toParam,
+            );
+            rowsTouched++;
+          }
         }
       })();
 
-      pairsOk++;
+      pairsOk += chunk.length;
       g.__presetInfoOpenProgress!.ok = pairsOk;
+      g.__presetInfoOpenProgress!.current = chunkStart + chunk.length;
     } catch (e) {
-      errors.push(`${advert_id}/${nm_id}: ${e instanceof Error ? e.message : String(e)}`);
+      errors.push(`${chunkLabel}: ${e instanceof Error ? e.message : String(e)}`);
       g.__presetInfoOpenProgress!.err = errors.length;
     }
+
+    if (chunkIndex < pairChunks.length - 1) await sleep(CHUNK_GAP_MS);
   }
 
   g.__presetInfoOpenProgress!.current = pairs.length;

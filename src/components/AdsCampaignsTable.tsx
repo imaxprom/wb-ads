@@ -74,6 +74,20 @@ function fmtChangeTime(iso: string | null): string {
   return fmtDate(iso);
 }
 
+function parseDbDateTime(value: string | null): Date | null {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  const withIsoSeparator = trimmed.replace(" ", "T");
+  const withTimezone = /[+-]\d{2}$/i.test(withIsoSeparator)
+    ? `${withIsoSeparator}:00`
+    : withIsoSeparator.replace(/([+-]\d{2})(\d{2})$/i, "$1:$2");
+  const normalized = /(?:Z|[+-]\d{2}:\d{2})$/i.test(withTimezone)
+    ? withTimezone
+    : `${withTimezone}Z`;
+  const d = new Date(normalized);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 
 function statusLabel(s: number): { text: string; color: string } {
   if (s === 4) return { text: "готова", color: "var(--accent)" };
@@ -245,8 +259,9 @@ function BidHistoryTooltip({ history }: { history: { at: string; rub: number }[]
     return <span>нет истории изменений</span>;
   }
   const months = ["янв", "февр", "мар", "апр", "мая", "июн", "июл", "авг", "сент", "окт", "нояб", "дек"];
-  const fmtAt = (atUtc: string) => {
-    const d = new Date(atUtc.replace(" ", "T") + "Z");
+  const fmtAt = (at: string) => {
+    const d = parseDbDateTime(at);
+    if (!d) return at || "—";
     return `${d.getDate()} ${months[d.getMonth()]} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   };
   return (
@@ -271,9 +286,9 @@ function DepositHistoryTooltip({ history }: { history: { at: string; sum: number
   }
   const SOURCE: Record<number, string> = { 0: "Счёт", 1: "Баланс", 3: "Бонусы" };
   const months = ["янв", "февр", "мар", "апр", "мая", "июн", "июл", "авг", "сент", "окт", "нояб", "дек"];
-  const fmtAt = (atUtc: string) => {
-    // bid_changes_log.at пишется через datetime('now') — это UTC. Конвертим в МСК для отображения.
-    const d = new Date(atUtc.replace(" ", "T") + "Z");
+  const fmtAt = (at: string) => {
+    const d = parseDbDateTime(at);
+    if (!d) return at || "—";
     const day = d.getDate();
     const m = months[d.getMonth()];
     const hh = String(d.getHours()).padStart(2, "0");

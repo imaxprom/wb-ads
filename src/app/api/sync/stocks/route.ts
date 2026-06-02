@@ -3,19 +3,73 @@ import { getDb } from "@/lib/db";
 import { getApiKey } from "@/lib/api-key";
 import { Client } from "pg";
 
+export const dynamic = "force-dynamic";
+export const maxDuration = 120;
+
+const WB_STOCKS_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/stocks?dateFrom=2019-01-01T00:00:00";
+
 export async function POST() {
   const apiKey = getApiKey();
 
-  const res = await fetch(
-    "https://statistics-api.wildberries.ru/api/v1/supplier/stocks?dateFrom=2019-01-01T00:00:00",
-    { headers: { Authorization: apiKey } }
-  );
+  const res = await fetch(WB_STOCKS_URL, {
+    headers: { Authorization: apiKey },
+    cache: "no-store",
+  });
+  const contentType = res.headers.get("content-type") || "";
+  const body = await res.text();
+  const bodyLength = Buffer.byteLength(body);
+  const bodyPreview = body.slice(0, 300);
 
   if (!res.ok) {
-    return NextResponse.json({ error: `WB API ${res.status}` }, { status: 502 });
+    return NextResponse.json({
+      ok: false,
+      error: `stocks: WB API ${res.status}`,
+      wbStatus: res.status,
+      contentType,
+      bodyLength,
+      bodyPreview,
+      retryable: res.status === 429 || res.status >= 500,
+    }, { status: 502 });
   }
 
-  const data: Record<string, unknown>[] = await res.json();
+  if (!body.trim()) {
+    return NextResponse.json({
+      ok: false,
+      error: "stocks: empty body from WB",
+      wbStatus: res.status,
+      contentType,
+      bodyLength,
+      retryable: true,
+    }, { status: 502 });
+  }
+
+  let data: Record<string, unknown>[];
+  try {
+    const parsed = JSON.parse(body);
+    if (!Array.isArray(parsed)) {
+      return NextResponse.json({
+        ok: false,
+        error: "stocks: WB response is not an array",
+        wbStatus: res.status,
+        contentType,
+        bodyLength,
+        bodyPreview,
+        retryable: true,
+      }, { status: 502 });
+    }
+    data = parsed as Record<string, unknown>[];
+  } catch (e) {
+    return NextResponse.json({
+      ok: false,
+      error: "stocks: invalid JSON from WB",
+      parseError: e instanceof Error ? e.message : String(e),
+      wbStatus: res.status,
+      contentType,
+      bodyLength,
+      bodyPreview,
+      retryable: true,
+    }, { status: 502 });
+  }
 
   const databaseUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
   if (databaseUrl) {
